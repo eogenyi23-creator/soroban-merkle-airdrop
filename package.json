@@ -1,0 +1,15 @@
+{
+  "name": "soroban-merkle-airdrop",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build",
+    "test:ts": "pnpm -r test",
+    "test:rust": "cargo test",
+    "lint": "pnpm -r lint"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  }
+}

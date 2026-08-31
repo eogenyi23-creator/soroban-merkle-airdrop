@@ -1,0 +1,63 @@
+name: Deploy Contract
+
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: "Network"
+        required: true
+        default: "testnet"
+        type: choice
+        options: [testnet, mainnet]
+      merkle_root:
+        description: "Merkle root hex (32 bytes)"
+        required: true
+      total_amount:
+        description: "Total token amount to deposit"
+        required: true
+      token_address:
+        description: "SEP-41 token contract address"
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - name: Build WASM
+        run: cargo build --manifest-path contracts/airdrop/Cargo.toml --target wasm32v1-none --release
+      - name: Install Stellar CLI
+        run: |
+          curl -L https://github.com/stellar/stellar-cli/releases/latest/download/stellar-cli-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo mv stellar /usr/local/bin/
+      - name: Configure identity
+        run: echo "${{ secrets.DEPLOYER_SECRET_KEY }}" | stellar keys add deployer --secret-key
+      - name: Upload WASM
+        id: upload
+        run: |
+          HASH=$(stellar contract upload --network ${{ inputs.network }} --source deployer \
+            --wasm target/wasm32v1-none/release/soroban_merkle_airdrop.wasm)
+          echo "wasm_hash=$HASH" >> "$GITHUB_OUTPUT"
+      - name: Deploy contract
+        id: deploy
+        run: |
+          ID=$(stellar contract deploy --network ${{ inputs.network }} --source deployer \
+            --wasm-hash ${{ steps.upload.outputs.wasm_hash }})
+          echo "contract_id=$ID" >> "$GITHUB_OUTPUT"
+      - name: Initialise contract
+        run: |
+          stellar contract invoke --network ${{ inputs.network }} --source deployer \
+            --id ${{ steps.deploy.outputs.contract_id }} \
+            -- initialize \
+            --admin $(stellar keys address deployer) \
+            --token ${{ inputs.token_address }} \
+            --merkle_root ${{ inputs.merkle_root }} \
+            --total_amount ${{ inputs.total_amount }}
+      - name: Print result
+        run: |
+          echo "Contract ID: ${{ steps.deploy.outputs.contract_id }}"
+          echo "WASM hash:   ${{ steps.upload.outputs.wasm_hash }}"
+          echo "Network:     ${{ inputs.network }}"

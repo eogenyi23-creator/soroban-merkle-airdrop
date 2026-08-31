@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["contracts/airdrop"]
+
+[workspace.dependencies]
+soroban-sdk = { version = "27.0.6" }

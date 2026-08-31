@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  contract:
+    name: Contract (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run tests
+        run: cargo test --manifest-path contracts/airdrop/Cargo.toml
+      - name: Build WASM
+        run: cargo build --manifest-path contracts/airdrop/Cargo.toml --target wasm32v1-none --release
+
+  sdk:
+    name: SDK + CLI (TypeScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "9"
+      - name: Install & build SDK
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm build
+        working-directory: sdk
+      - name: Test SDK
+        run: pnpm test
+        working-directory: sdk
+      - name: Install & build CLI
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm build
+        working-directory: cli
+      - name: Test CLI
+        run: pnpm test
+        working-directory: cli
+
+  web:
+    name: Web (Next.js)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "9"
+      - name: Install & build SDK
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm build
+        working-directory: sdk
+      - name: Install web
+        run: pnpm install --no-frozen-lockfile
+        working-directory: web
+      - name: Lint
+        run: pnpm lint
+        working-directory: web
+        continue-on-error: true
+      - name: Build
+        run: pnpm build
+        working-directory: web
+        env:
+          AIRDROP_CONTRACT_ID: placeholder
+          NETWORK: testnet

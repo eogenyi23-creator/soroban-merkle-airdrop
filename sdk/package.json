@@ -1,0 +1,22 @@
+{
+  "name": "@soroban-merkle-airdrop/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK and Merkle tree builder for soroban-merkle-airdrop",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "13.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.0",
+    "typescript": "5.4.5",
+    "vitest": "1.6.0",
+    "@typescript-eslint/parser": "7.13.0",
+    "@typescript-eslint/eslint-plugin": "7.13.0"
+  }
+}
