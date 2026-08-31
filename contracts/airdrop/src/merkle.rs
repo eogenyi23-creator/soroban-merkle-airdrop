@@ -23,12 +23,11 @@ pub fn leaf_hash(env: &Env, claimant: &Address, amount: i128) -> BytesN<32> {
     let mut data = Bytes::new(env);
 
     // Encode the address as its raw 32-byte Stellar strkey binary.
-    let addr_bytes: BytesN<32> = claimant.clone().try_into().unwrap_or_else(|_| {
-        // Contract addresses are also 32 bytes via the ScAddress representation.
-        // We serialize via the XDR encoding of the address sc-val.
-        let raw = env.crypto().sha256(&claimant.to_string().as_bytes());
-        raw
-    });
+    // Hash the string representation of the address to get a stable 32-byte key.
+    let addr_bytes: BytesN<32> = env
+        .crypto()
+        .sha256(&claimant.to_string().to_bytes())
+        .into();
     data.append(&addr_bytes.into());
 
     // Encode amount as 16-byte big-endian i128.
@@ -36,7 +35,7 @@ pub fn leaf_hash(env: &Env, claimant: &Address, amount: i128) -> BytesN<32> {
     let amount_b: Bytes = Bytes::from_array(env, &amount_bytes);
     data.append(&amount_b);
 
-    env.crypto().sha256(&data)
+    env.crypto().sha256(&data).into()
 }
 
 /// Verify a Merkle proof.
@@ -74,5 +73,5 @@ fn hash_pair(env: &Env, a: BytesN<32>, b: BytesN<32>) -> BytesN<32> {
     data.append(&first.into());
     data.append(&second.into());
 
-    env.crypto().sha256(&data)
+    env.crypto().sha256(&data).into()
 }
