@@ -27,7 +27,6 @@
 //! - `DataKey::Claimed(addr)`       → `bool`        (persistent, per claimant)
 
 #![no_std]
-extern crate alloc;
 
 mod merkle;
 mod types;
@@ -157,9 +156,8 @@ impl AirdropContract {
             .ok_or(AirdropError::NotInitialized)?;
 
         let leaf = merkle::leaf_hash(&env, &claimant, amount);
-        let proof_vec: alloc::vec::Vec<BytesN<32>> = proof.iter().collect();
 
-        if !merkle::verify_proof(&env, &root, leaf, &proof_vec) {
+        if !merkle::verify_proof(&env, &root, leaf, &proof) {
             return Err(AirdropError::InvalidProof);
         }
 

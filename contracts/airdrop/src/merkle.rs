@@ -16,7 +16,7 @@
 //!
 //! This matches the convention used by the TypeScript SDK's MerkleTree builder.
 
-use soroban_sdk::{Address, Bytes, BytesN, Env};
+use soroban_sdk::{Address, Bytes, BytesN, Env, Vec};
 
 /// Compute the leaf hash for a (claimant, amount) pair.
 pub fn leaf_hash(env: &Env, claimant: &Address, amount: i128) -> BytesN<32> {
@@ -48,12 +48,12 @@ pub fn verify_proof(
     env: &Env,
     root: &BytesN<32>,
     leaf: BytesN<32>,
-    proof: &[BytesN<32>],
+    proof: &Vec<BytesN<32>>,
 ) -> bool {
     let mut current = leaf;
 
     for sibling in proof.iter() {
-        current = hash_pair(env, current, sibling.clone());
+        current = hash_pair(env, current, sibling);
     }
 
     &current == root
