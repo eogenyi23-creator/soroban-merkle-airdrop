@@ -53,7 +53,7 @@ fn merkle_pair(env: &Env, a: BytesN<32>, b: BytesN<32>) -> BytesN<32> {
     let (first, second) = if a.as_ref() <= b.as_ref() { (a, b) } else { (b, a) };
     data.append(&first.into());
     data.append(&second.into());
-    env.crypto().sha256(&data)
+    env.crypto().sha256(&data).into()
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
