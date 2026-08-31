@@ -128,7 +128,7 @@ export default function ClaimPage() {
           </div>
         )}
 
-        {status === "eligible" && proofJson && (
+        {(status === "eligible" || status === "claiming") && proofJson && (
           <>
             <label style={{ fontSize: 13, color: "#aaa" }}>
               SECRET KEY (to sign the claim transaction — never sent to any server)
