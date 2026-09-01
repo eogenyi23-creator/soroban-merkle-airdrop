@@ -141,7 +141,15 @@ Global options:
 
 ## How the Merkle Proof Works
 
-**Leaf hash:** `SHA-256(address_bytes[32] ++ amount_big_endian[16])`
+**Leaf hash:** `SHA-256( SHA-256(address_as_utf8_strkey_bytes) ++ amount_big_endian[16] )`
+
+The address is first hashed as the UTF-8 bytes of its Stellar strkey string
+(e.g. `GABC...` for accounts, `CABC...` for contracts) to produce a stable
+32-byte value. That hash is then concatenated with the 16-byte big-endian
+encoding of the amount and SHA-256'd again to produce the leaf. The double-hash
+is necessary because Soroban's `Address` type does not expose the raw public-key
+bytes directly in contract code — hashing the strkey string is the stable,
+canonical substitute used by both the Rust contract and the TypeScript SDK.
 
 **Node hash:** `SHA-256(min(left, right) ++ max(left, right))` — sorted so the tree is position-independent.
 
