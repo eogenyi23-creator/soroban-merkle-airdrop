@@ -6,7 +6,14 @@
  * this implementation must match exactly.
  *
  * # Leaf hash
- *   SHA-256(strkey_address_bytes[32] ++ amount_big_endian[16])
+ *
+ *   SHA-256( SHA-256(address_strkey_utf8_bytes) ++ amount_big_endian[16] )
+ *
+ * The address is hashed as its Stellar strkey string (e.g. `G...` for
+ * accounts, `C...` for contracts) encoded as UTF-8 bytes — NOT as raw
+ * decoded key bytes. This matches the Rust contract's `merkle::leaf_hash`
+ * which calls `claimant.to_string()` to obtain the strkey and then
+ * SHA-256-hashes the resulting bytes.
  *
  * # Node hash
  *   SHA-256(min(left, right) ++ max(left, right))
@@ -14,7 +21,6 @@
  */
 
 import { createHash } from "crypto";
-import { StrKey } from "@stellar/stellar-sdk";
 import type { AirdropEntry, ClaimProof, MerkleTreeResult } from "./types.js";
 
 // ─── Hashing ────────────────────────────────────────────────────────────────
@@ -25,27 +31,30 @@ function sha256(data: Buffer): Buffer {
 
 /**
  * Compute the leaf hash for a given (address, amount) pair.
- * Must match `merkle::leaf_hash` in the Rust contract.
+ * Must match `merkle::leaf_hash` in the Rust contract exactly.
+ *
+ * Algorithm:
+ *   1. addr_hash = SHA-256(UTF-8 bytes of the Stellar strkey string)
+ *   2. leaf = SHA-256(addr_hash ++ amount as 16-byte big-endian i128)
+ *
+ * Note: the address is hashed as its strkey STRING bytes, not as the raw
+ * 32-byte public key / contract ID. Decoding the strkey to raw bytes and
+ * hashing those would produce a different (incorrect) result.
  */
 export function leafHash(address: string, amount: bigint): Buffer {
-  // Decode the Stellar address to its raw 32-byte public key.
-  let addrBytes: Buffer;
-  if (StrKey.isValidEd25519PublicKey(address)) {
-    addrBytes = Buffer.from(StrKey.decodeEd25519PublicKey(address));
-  } else if (StrKey.isValidContract(address)) {
-    addrBytes = Buffer.from(StrKey.decodeContract(address));
-  } else {
-    throw new Error(`Invalid Stellar address: ${address}`);
-  }
+  // Step 1: SHA-256 the UTF-8 bytes of the strkey string.
+  // This matches Rust: env.crypto().sha256(&claimant.to_string().to_bytes())
+  const addrHash = sha256(Buffer.from(address, "utf8"));
 
-  // Encode amount as 16-byte big-endian (i128 = two 64-bit words).
+  // Step 2: Encode amount as 16-byte big-endian (i128 = two 64-bit words).
   const amountBuf = Buffer.alloc(16);
   const hi = amount >> 64n;
   const lo = amount & 0xffffffffffffffffn;
   amountBuf.writeBigInt64BE(BigInt.asIntN(64, hi), 0);
   amountBuf.writeBigUInt64BE(lo, 8);
 
-  return sha256(Buffer.concat([addrBytes, amountBuf]));
+  // Step 3: SHA-256(addr_hash ++ amount_be16)
+  return sha256(Buffer.concat([addrHash, amountBuf]));
 }
 
 /**

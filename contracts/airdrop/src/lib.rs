@@ -12,10 +12,13 @@
 //! 1. **Organiser** builds a Merkle tree off-chain from a list of
 //!    `(address, amount)` pairs using the TypeScript SDK.
 //! 2. **Organiser** deploys this contract and calls `initialize` with the
-//!    Merkle root, the SEP-41 token address, and deposits the total supply.
+//!    Merkle root, the SEP-41 token address, the total supply, and an
+//!    expiration timestamp.
 //! 3. **Recipients** call `claim` with their amount and Merkle proof.
 //!    The contract verifies the proof, marks the address as claimed, and
 //!    transfers the tokens.
+//! 4. After `expiration`, the admin may call `reclaim()` to recover any
+//!    unclaimed tokens.
 //!
 //! # Storage layout
 //!
@@ -24,6 +27,7 @@
 //! - `DataKey::Admin`               → `Address`     (instance)
 //! - `DataKey::TotalDeposited`      → `i128`        (instance)
 //! - `DataKey::Active`              → `bool`        (instance)
+//! - `DataKey::Expiration`          → `u64`         (instance)
 //! - `DataKey::Claimed(addr)`       → `bool`        (persistent, per claimant)
 
 #![no_std]
@@ -51,6 +55,10 @@ contractmeta!(key = "Version", val = "0.1.0");
 const CLAIMED_TTL: u32 = 12_614_400;
 const CLAIMED_TTL_THRESHOLD: u32 = CLAIMED_TTL / 2;
 
+/// TTL for instance storage — ~2 years of ledgers (same magnitude as CLAIMED_TTL).
+const INSTANCE_TTL: u32 = 12_614_400;
+const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL / 2;
+
 #[contract]
 pub struct AirdropContract;
 
@@ -69,17 +77,20 @@ impl AirdropContract {
     /// * `token`        - SEP-41 token contract address to distribute.
     /// * `merkle_root`  - 32-byte Merkle root of the (address, amount) tree.
     /// * `total_amount` - Total tokens to be distributed; transferred from admin.
+    /// * `expiration`   - Unix timestamp (seconds) after which `reclaim()` is
+    ///                    permitted. Must be in the future relative to deployment.
     pub fn initialize(
         env: Env,
         admin: Address,
         token: Address,
         merkle_root: BytesN<32>,
         total_amount: i128,
+        expiration: u64,
     ) -> Result<(), AirdropError> {
         if env.storage().instance().has(&DataKey::MerkleRoot) {
             return Err(AirdropError::AlreadyInitialized);
         }
-        if total_amount == 0 {
+        if total_amount <= 0 {
             return Err(AirdropError::ZeroAmount);
         }
 
@@ -98,6 +109,7 @@ impl AirdropContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::TotalDeposited, &total_amount);
         env.storage().instance().set(&DataKey::Active, &true);
+        env.storage().instance().set(&DataKey::Expiration, &expiration);
 
         env.events().publish(
             (symbol_short!("init"), admin),
@@ -128,6 +140,11 @@ impl AirdropContract {
     ) -> Result<(), AirdropError> {
         claimant.require_auth();
 
+        // Extend instance storage TTL so core contract data doesn't expire.
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+
         // Check active.
         let active: bool = env
             .storage()
@@ -138,7 +155,7 @@ impl AirdropContract {
             return Err(AirdropError::NotActive);
         }
 
-        if amount == 0 {
+        if amount <= 0 {
             return Err(AirdropError::ZeroAmount);
         }
 
@@ -203,8 +220,9 @@ impl AirdropContract {
         Ok(())
     }
 
-    /// Reclaim unclaimed tokens after the airdrop ends. Admin only.
+    /// Reclaim unclaimed tokens after the airdrop expires. Admin only.
     ///
+    /// Can only be called once `env.ledger().timestamp() >= expiration`.
     /// Transfers the contract's remaining token balance back to the admin.
     pub fn reclaim(env: Env) -> Result<i128, AirdropError> {
         let admin: Address = env
@@ -213,6 +231,16 @@ impl AirdropContract {
             .get(&DataKey::Admin)
             .ok_or(AirdropError::NotInitialized)?;
         admin.require_auth();
+
+        // Time-gate: reclaim is only permitted after the expiration timestamp.
+        let expiration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Expiration)
+            .ok_or(AirdropError::NotInitialized)?;
+        if env.ledger().timestamp() < expiration {
+            return Err(AirdropError::NotYetExpired);
+        }
 
         let token: Address = env
             .storage()
@@ -270,5 +298,10 @@ impl AirdropContract {
             .instance()
             .get(&DataKey::TotalDeposited)
             .unwrap_or(0)
+    }
+
+    /// Return the expiration timestamp (unix seconds) after which reclaim is allowed.
+    pub fn expiration(env: Env) -> Option<u64> {
+        env.storage().instance().get(&DataKey::Expiration)
     }
 }
