@@ -5,8 +5,21 @@
 //!
 //! # Leaf construction
 //!
-//! A leaf is the SHA-256 hash of:
-//!   `address_bytes (32 bytes) ++ amount (16 bytes, big-endian i128)`
+//! A leaf is the SHA-256 hash of a pre-hashed address concatenated with the
+//! 16-byte big-endian encoding of the amount:
+//!
+//!   `SHA-256( SHA-256(address_strkey_utf8_bytes) ++ amount_be_bytes[16] )`
+//!
+//! The address is first encoded as its Stellar strkey string (e.g. `G...` for
+//! accounts, `C...` for contracts), then the UTF-8 bytes of that string are
+//! SHA-256 hashed to produce a fixed 32-byte value. This hash is then
+//! concatenated with the 16-byte big-endian i128 amount and SHA-256 hashed
+//! again to produce the leaf.
+//!
+//! The TypeScript SDK's `leafHash()` must match this exactly:
+//!   - Hash the strkey string bytes with SHA-256 (do NOT use raw decoded bytes).
+//!   - Encode the amount as 16-byte big-endian (i128 → two 64-bit words).
+//!   - SHA-256 the concatenation.
 //!
 //! # Node hashing
 //!
@@ -19,22 +32,25 @@
 use soroban_sdk::{Address, Bytes, BytesN, Env, Vec};
 
 /// Compute the leaf hash for a (claimant, amount) pair.
+///
+/// Leaf = `SHA-256( SHA-256(address_strkey_utf8_bytes) ++ amount_be_bytes[16] )`
+///
+/// The address is hashed as its strkey UTF-8 string bytes (e.g. `G...` or
+/// `C...`), not as raw decoded bytes. The TypeScript SDK must match this.
 pub fn leaf_hash(env: &Env, claimant: &Address, amount: i128) -> BytesN<32> {
+    // Step 1: SHA-256 the strkey UTF-8 bytes of the address.
+    let addr_str: soroban_sdk::String = claimant.to_string();
+    let addr_str_bytes: Bytes = addr_str.to_bytes();
+    let addr_hash: BytesN<32> = env.crypto().sha256(&addr_str_bytes).into();
+
+    // Step 2: Concatenate addr_hash (32 bytes) with amount (16-byte big-endian i128).
     let mut data = Bytes::new(env);
+    data.append(&addr_hash.into());
 
-    // Encode the address as its raw 32-byte Stellar strkey binary.
-    // Hash the string representation of the address to get a stable 32-byte key.
-    let addr_bytes: BytesN<32> = env
-        .crypto()
-        .sha256(&claimant.to_string().to_bytes())
-        .into();
-    data.append(&addr_bytes.into());
-
-    // Encode amount as 16-byte big-endian i128.
-    let amount_bytes = amount.to_be_bytes();
-    let amount_b: Bytes = Bytes::from_array(env, &amount_bytes);
+    let amount_b: Bytes = Bytes::from_array(env, &amount.to_be_bytes());
     data.append(&amount_b);
 
+    // Step 3: SHA-256 the concatenation to get the leaf.
     env.crypto().sha256(&data).into()
 }
 
