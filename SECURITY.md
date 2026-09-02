@@ -21,4 +21,9 @@ not** open a public GitHub issue. Instead:
 
 - Use GitHub's private vulnerability reporting feature on this
   repository (Security tab → Report a vulnerability), or
-- Email eogenyi23@gmail.com with
+- Email eogenyi23@gmail.com with a description of the issue, the affected component (contract, SDK, CLI, or web app), and, if possible, steps to reproduce it.
+
+
+Please do not disclose the vulnerability publicly until it has been
+addressed. We'll acknowledge your report as soon as possible and keep
+you updated as we investigate and fix the issue.
