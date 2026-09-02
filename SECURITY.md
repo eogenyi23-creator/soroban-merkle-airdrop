@@ -21,4 +21,4 @@ not** open a public GitHub issue. Instead:
 
 - Use GitHub's private vulnerability reporting feature on this
   repository (Security tab → Report a vulnerability), or
-- Email [INSERT YOUR CONTACT EMAIL] with
+- Email eogenyi23@gmail.com with
