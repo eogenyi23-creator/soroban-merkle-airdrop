@@ -140,3 +140,4 @@ export function createAirdropClient(config: NetworkConfig) {
 
   return { isClaimed, isActive, merkleRoot, totalDeposited, claim };
 }
+
