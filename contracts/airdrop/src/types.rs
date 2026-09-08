@@ -31,7 +31,7 @@ pub enum DataKey {
     Expiration,
 }
 
-/// Errors returned by the airdrop contract..
+/// Errors returned by the airdrop contract.
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AirdropError {
