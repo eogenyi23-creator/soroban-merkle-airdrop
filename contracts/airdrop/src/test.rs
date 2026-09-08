@@ -9,7 +9,7 @@ use soroban_sdk::{
 
 // ─── Test helpers ──────────────────────────────────────────────────────────
 
-/// Default expiration: 1000 seconds after the default ledger timestamp (0)..
+/// Default expiration: 1000 seconds after the default ledger timestamp (0).
 const DEFAULT_EXPIRATION: u64 = 1000;
 
 fn setup() -> (Env, Address, Address, Address) {
