@@ -149,7 +149,7 @@ The address is first hashed as the UTF-8 bytes of its Stellar strkey string
 encoding of the amount and SHA-256'd again to produce the leaf. The double-hash
 is necessary because Soroban's `Address` type does not expose the raw public-key
 bytes directly in contract code — hashing the strkey string is the stable,
-canonical substitute used by both the Rust contract and the TypeScript SDK..
+canonical substitute used by both the Rust contract and the TypeScript SDK.
 
 **Node hash:** `SHA-256(min(left, right) ++ max(left, right))` — sorted so the tree is position-independent.
 
