@@ -149,6 +149,7 @@ export function buildMerkleTree(entries: AirdropEntry[]): MerkleTreeResult {
   return { root, proofs };
 }
 
+
 /**
  * Verify that a proof is valid against a given root.
  * Useful for off-chain validation before submitting a claim transaction.
