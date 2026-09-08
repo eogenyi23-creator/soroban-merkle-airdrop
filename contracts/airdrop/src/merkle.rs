@@ -14,7 +14,7 @@
 //! accounts, `C...` for contracts), then the UTF-8 bytes of that string are
 //! SHA-256 hashed to produce a fixed 32-byte value. This hash is then
 //! concatenated with the 16-byte big-endian i128 amount and SHA-256 hashed
-//! again to produce the leaf.
+//! again to produce the leaf..
 //!
 //! The TypeScript SDK's `leafHash()` must match this exactly:
 //!   - Hash the strkey string bytes with SHA-256 (do NOT use raw decoded bytes).
