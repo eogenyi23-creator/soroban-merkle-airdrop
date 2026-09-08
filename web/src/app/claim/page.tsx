@@ -196,3 +196,4 @@ function btnStyle(bg: string): React.CSSProperties {
     width: "100%",
   };
 }
+
