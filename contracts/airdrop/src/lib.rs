@@ -13,7 +13,7 @@
 //!    `(address, amount)` pairs using the TypeScript SDK.
 //! 2. **Organiser** deploys this contract and calls `initialize` with the
 //!    Merkle root, the SEP-41 token address, the total supply, and an
-//!    expiration timestamp.
+//!    expiration timestamp..
 //! 3. **Recipients** call `claim` with their amount and Merkle proof.
 //!    The contract verifies the proof, marks the address as claimed, and
 //!    transfers the tokens.
