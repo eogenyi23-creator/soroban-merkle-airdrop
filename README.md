@@ -160,7 +160,7 @@ This means:
 
 ## Contributing
 
-See [docs/contributing.md](docs/contributing.md). Issues tagged `good first issue` are beginner-friendly.
+See [docs/contributing.md](docs/contributing.md).
 
 ## License
 
