@@ -2,15 +2,6 @@
 
 use soroban_sdk::{contracttype, contracterror, Address};
 
-/// A leaf in the Merkle tree: the claimant address and the amount they can claim.
-///
-/// Leaf hash = SHA-256(address_bytes ++ amount_bytes_big_endian)
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct AirdropEntry {
-    pub claimant: Address,
-    pub amount: i128,
-}
 
 /// Persistent storage keys.
 #[contracttype]
