@@ -209,6 +209,10 @@ impl AirdropContract {
     // ─── Admin ───────────────────────────────────────────────────────────────
 
     /// Pause or unpause the airdrop. Only the admin can call this.
+    ///
+    /// Emits an event with topic `("paused", admin)` and data `active`
+    /// so off-chain indexers and monitoring tools can observe every
+    /// pause/unpause transition.
     pub fn set_active(env: Env, active: bool) -> Result<(), AirdropError> {
         let admin: Address = env
             .storage()
@@ -217,7 +221,27 @@ impl AirdropContract {
             .ok_or(AirdropError::NotInitialized)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Active, &active);
+
+        env.events().publish(
+            (symbol_short!("paused"), admin),
+            active,
+        );
+
         Ok(())
+    }
+
+    /// Restore the contract instance from archival.
+    ///
+    /// Soroban's state-archival mechanism can archive instance storage once its
+    /// TTL reaches zero, making the contract inaccessible. This public function
+    /// lets *anyone* pay to restore the contract by extending instance TTL back
+    /// to `INSTANCE_TTL` ledgers — no admin authentication required.
+    ///
+    /// See: <https://developers.stellar.org/docs/learn/encyclopedia/storage/state-archival>
+    pub fn restore(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
     }
 
     /// Reclaim unclaimed tokens after the airdrop expires. Admin only.

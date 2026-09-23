@@ -160,13 +160,63 @@ fn test_pause_and_unpause() {
     mint(&env, &token, &admin, &admin, 1500);
     client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
 
+    // ── Pause ────────────────────────────────────────────────────────────────
     client.set_active(&false);
     let result = client.try_claim(&claimant, &1000, &proof);
     assert_eq!(result, Err(Ok(AirdropError::NotActive)));
 
+    // Verify the "paused" event was emitted for the pause call.
+    // Events are indexed as (contract_id, topics...) → data.
+    let events = env.events().all();
+    let pause_event = events.iter().find(|(_contract, topics, data)| {
+        let topics_val = topics.to_val();
+        let data_val = data.to_val();
+        // Topic tuple is (symbol_short!("paused"), admin); data is false.
+        // We check the event exists by inspecting the last event that matches.
+        let _ = (topics_val, data_val);
+        // Use a simpler approach: check publish topics via IntoVal
+        use soroban_sdk::IntoVal;
+        *topics == (symbol_short!("paused"), admin.clone()).into_val(&env)
+            && *data == false.into_val(&env)
+    });
+    assert!(pause_event.is_some(), "set_active(false) must emit a 'paused' event with data=false");
+
+    // ── Unpause ──────────────────────────────────────────────────────────────
     client.set_active(&true);
     client.claim(&claimant, &1000, &proof); // succeeds again
     assert!(client.is_claimed(&claimant));
+
+    // Verify the "paused" event was emitted for the unpause call.
+    let events = env.events().all();
+    let unpause_event = events.iter().find(|(_contract, topics, data)| {
+        use soroban_sdk::IntoVal;
+        *topics == (symbol_short!("paused"), admin.clone()).into_val(&env)
+            && *data == true.into_val(&env)
+    });
+    assert!(unpause_event.is_some(), "set_active(true) must emit a 'paused' event with data=true");
+}
+
+/// Issue #12: set_active on an uninitialised contract must NOT emit an event —
+/// it must return NotInitialized before reaching the publish call.
+#[test]
+fn test_set_active_uninitialized_no_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AirdropContract, ());
+    let client = AirdropContractClient::new(&env, &contract_id);
+
+    let result = client.try_set_active(&false);
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::NotInitialized)),
+        "set_active on uninitialized contract must return NotInitialized"
+    );
+
+    // No events should have been published.
+    assert!(
+        env.events().all().is_empty(),
+        "No event should be emitted when set_active fails with NotInitialized"
+    );
 }
 
 #[test]
@@ -509,4 +559,56 @@ fn test_leaf_hash_known_vector() {
         actual, expected,
         "Rust leaf_hash does not match TypeScript SDK output — the two implementations disagree"
     );
+}
+
+// ─── Issue #62: restore() helper ───────────────────────────────────────────
+
+/// restore() should extend the instance TTL even when called by a random
+/// address (no auth required).
+#[test]
+fn test_restore_extends_ttl() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    // Simulate near-archival: force TTL down to 1.
+    env.storage().instance().extend_ttl(1, 1);
+    let ttl_before = env.storage().instance().get_ttl();
+    assert_eq!(ttl_before, 1, "TTL should be 1 before restore");
+
+    // Anyone can call restore() — no auth needed.
+    client.restore();
+
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(
+        ttl_after > 1,
+        "restore() must extend instance TTL; ttl_after={ttl_after}"
+    );
+}
+
+/// restore() requires no authentication — even a fresh Address can call it.
+#[test]
+fn test_restore_requires_no_auth() {
+    let env = Env::default();
+    // Do NOT mock all auths — this verifies restore() passes without any auth.
+    let admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let contract_id = env.register(AirdropContract, ());
+    let client = AirdropContractClient::new(&env, &contract_id);
+
+    // Initialize using mock auth just for setup.
+    env.mock_all_auths();
+    let claimant = Address::generate(&env);
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token_id, &admin, &admin, 1500);
+    client.initialize(&admin, &token_id, &root, &1500, &DEFAULT_EXPIRATION);
+    // Clear mock auths so subsequent calls must be auth-free.
+    env.set_auths(&[]);
+
+    // restore() must succeed without any signed auth.
+    client.restore(); // panics if auth is required
 }
