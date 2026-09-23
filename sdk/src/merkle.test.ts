@@ -115,3 +115,52 @@ describe("buildMerkleTree", () => {
     }
   });
 });
+
+// ─── Issue #65: verifyProof with mismatched proof length ──────────────────
+
+describe("verifyProof — mismatched proof length", () => {
+  /**
+   * Build a two-entry tree so each valid proof has exactly one sibling hash.
+   * We then mutate the proof array to test over- and under-length scenarios.
+   */
+  function twoEntrySetup() {
+    const entries = [
+      { address: ADDR_1, amount: 1000n },
+      { address: ADDR_2, amount: 500n },
+    ];
+    const { root, proofs } = buildMerkleTree(entries);
+    const entry = proofs.get(ADDR_1)!;
+    return { root, address: ADDR_1, amount: 1000n, validProof: entry.proof };
+  }
+
+  it("fails when one extra random hash is appended to a valid proof", () => {
+    const { root, address, amount, validProof } = twoEntrySetup();
+
+    // Sanity check: the original proof is valid.
+    expect(verifyProof(root, address, amount, validProof)).toBe(true);
+
+    // Append a random 32-byte hash (hex string) that doesn't belong.
+    const extraHash = "a".repeat(64); // 32 zero-like bytes
+    const tooLong = [...validProof, extraHash];
+
+    expect(verifyProof(root, address, amount, tooLong)).toBe(false);
+  });
+
+  it("fails when the last element is removed from a valid proof", () => {
+    const { root, address, amount, validProof } = twoEntrySetup();
+
+    // The two-entry tree produces a one-element proof. Removing the only
+    // element leaves an empty array, which cannot reach the root.
+    const tooShort = validProof.slice(0, -1);
+
+    expect(verifyProof(root, address, amount, tooShort)).toBe(false);
+  });
+
+  it("fails when an empty proof is supplied for a two-entry tree", () => {
+    const { root, address, amount } = twoEntrySetup();
+
+    // An empty proof means the leaf itself is claimed to be the root,
+    // which is false for a two-entry tree.
+    expect(verifyProof(root, address, amount, [])).toBe(false);
+  });
+});
