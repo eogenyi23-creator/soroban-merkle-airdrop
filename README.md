@@ -64,6 +64,34 @@ soroban-merkle-airdrop/
     └── deploy.yml              # Manual deploy to testnet/mainnet
 ```
 
+## SDK Installation
+
+Install the TypeScript SDK into your project:
+
+```bash
+npm install @soroban-merkle-airdrop/sdk
+# or
+pnpm add @soroban-merkle-airdrop/sdk
+```
+
+```ts
+import { buildMerkleTree, createAirdropClient, NETWORKS } from '@soroban-merkle-airdrop/sdk';
+
+// Build a Merkle tree from your airdrop list
+const { root, proofs } = buildMerkleTree([
+  { address: "GABC...", amount: 1000n },
+  { address: "GDEF...", amount: 500n },
+]);
+
+// Connect to the airdrop contract
+const client = createAirdropClient({
+  ...NETWORKS.testnet,
+  contractId: "C...",
+});
+
+const claimed = await client.isClaimed("GABC...");
+```
+
 ## Quick Start
 
 ### Prerequisites
