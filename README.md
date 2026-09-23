@@ -64,6 +64,16 @@ soroban-merkle-airdrop/
     └── deploy.yml              # Manual deploy to testnet/mainnet
 ```
 
+## SDK Installation
+
+```bash
+npm install @soroban-merkle-airdrop/sdk
+```
+
+```ts
+import { buildMerkleTree, verifyProof, createAirdropClient, NETWORKS } from '@soroban-merkle-airdrop/sdk';
+```
+
 ## Quick Start
 
 ### Prerequisites
