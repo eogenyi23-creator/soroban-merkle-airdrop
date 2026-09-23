@@ -16,6 +16,7 @@ import {
   Networks,
 } from "@stellar/stellar-sdk";
 import type { ClaimProof, ClaimResult, NetworkConfig } from "./types.js";
+import { AirdropContractError, RpcError } from "./types.js";
 
 export function createAirdropClient(config: NetworkConfig) {
   const server = new rpc.Server(config.rpcUrl, { allowHttp: false });
@@ -87,7 +88,13 @@ export function createAirdropClient(config: NetworkConfig) {
 
     const simResult = await server.simulateTransaction(tx);
     if (rpc.Api.isSimulationError(simResult)) {
-      throw new Error(`Simulation failed: ${simResult.error}`);
+      // Try to extract a numeric contract error code from the simulation error string.
+      // Soroban surfaces contract errors as "Error(Contract, #N)" in the error message.
+      const contractCode = parseContractErrorCode(simResult.error);
+      if (contractCode !== null) {
+        throw new AirdropContractError(contractCode);
+      }
+      throw new RpcError(`Simulation failed: ${simResult.error}`);
     }
 
     const preparedTx = rpc.assembleTransaction(tx, simResult).build();
@@ -95,7 +102,10 @@ export function createAirdropClient(config: NetworkConfig) {
 
     const sendResult = await server.sendTransaction(preparedTx);
     if (sendResult.status === "ERROR") {
-      throw new Error(`Transaction failed: ${sendResult.errorResult?.toXDR("base64")}`);
+      throw new RpcError(
+        `Transaction submission failed`,
+        sendResult.errorResult?.toXDR("base64")
+      );
     }
 
     const txHash = sendResult.hash;
@@ -111,7 +121,7 @@ export function createAirdropClient(config: NetworkConfig) {
         };
       }
       if (poll.status === "FAILED") {
-        throw new Error(`Transaction failed on-chain: ${txHash}`);
+        throw new RpcError(`Transaction failed on-chain: ${txHash}`);
       }
     }
   }
@@ -129,7 +139,7 @@ export function createAirdropClient(config: NetworkConfig) {
 
     const simResult = await server.simulateTransaction(tx);
     if (rpc.Api.isSimulationError(simResult)) {
-      throw new Error(`Read simulation failed: ${simResult.error}`);
+      throw new RpcError(`Read simulation failed: ${simResult.error}`);
     }
     return (simResult as rpc.Api.SimulateTransactionSuccessResponse).result!.retval;
   }
@@ -139,4 +149,17 @@ export function createAirdropClient(config: NetworkConfig) {
   }
 
   return { isClaimed, isActive, merkleRoot, totalDeposited, claim };
+}
+
+/**
+ * Parse a numeric contract error code from a Soroban simulation error string.
+ * Soroban formats contract errors as: "Error(Contract, #N)" where N is the code.
+ * Returns the code as a number, or null if not parseable.
+ */
+function parseContractErrorCode(error: string): number | null {
+  const match = /Error\s*\(\s*Contract\s*,\s*#(\d+)\s*\)/i.exec(error);
+  if (match) {
+    return parseInt(match[1], 10);
+  }
+  return null;
 }
