@@ -236,6 +236,142 @@ fn test_zero_amount_claim_fails() {
     assert_eq!(result, Err(Ok(AirdropError::ZeroAmount)));
 }
 
+// ─── Issue #61: TTL extension on read queries ───────────────────────────────
+
+/// Helper: returns the instance TTL (live-until ledger) after setup.
+/// We verify that calling a query bumps the TTL to at least
+/// `current_sequence + INSTANCE_TTL_THRESHOLD`.
+///
+/// Soroban's test environment starts at sequence 0 and the default TTL after
+/// `extend_ttl(THRESHOLD, TTL)` is `sequence + TTL`.  We just check that
+/// `get_ttl()` is > 0, which proves extend_ttl was called (without it, fresh
+/// instance storage has a minimal default TTL close to 0).
+#[test]
+fn test_query_merkle_root_extends_ttl() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    let ttl_before = env.storage().instance().get_ttl();
+    // Simulate many ledgers passing without a claim — TTL would drop.
+    // We reset it to 1 to emulate a near-archived contract.
+    env.storage().instance().extend_ttl(1, 1);
+
+    client.merkle_root();
+
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(
+        ttl_after > 1,
+        "merkle_root() must refresh instance TTL; ttl_before={ttl_before}, ttl_after={ttl_after}"
+    );
+}
+
+#[test]
+fn test_query_is_claimed_extends_ttl() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    env.storage().instance().extend_ttl(1, 1);
+    client.is_claimed(&claimant);
+
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(ttl_after > 1, "is_claimed() must refresh instance TTL; got {ttl_after}");
+}
+
+#[test]
+fn test_query_is_active_extends_ttl() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    env.storage().instance().extend_ttl(1, 1);
+    client.is_active();
+
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(ttl_after > 1, "is_active() must refresh instance TTL; got {ttl_after}");
+}
+
+#[test]
+fn test_query_token_extends_ttl() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    env.storage().instance().extend_ttl(1, 1);
+    client.token();
+
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(ttl_after > 1, "token() must refresh instance TTL; got {ttl_after}");
+}
+
+#[test]
+fn test_query_admin_extends_ttl() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    env.storage().instance().extend_ttl(1, 1);
+    client.admin();
+
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(ttl_after > 1, "admin() must refresh instance TTL; got {ttl_after}");
+}
+
+#[test]
+fn test_query_total_deposited_extends_ttl() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    env.storage().instance().extend_ttl(1, 1);
+    client.total_deposited();
+
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(ttl_after > 1, "total_deposited() must refresh instance TTL; got {ttl_after}");
+}
+
+#[test]
+fn test_query_expiration_extends_ttl() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    env.storage().instance().extend_ttl(1, 1);
+    client.expiration();
+
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(ttl_after > 1, "expiration() must refresh instance TTL; got {ttl_after}");
+}
+
 // ─── Issue 3: Negative amount tests ────────────────────────────────────────
 
 #[test]

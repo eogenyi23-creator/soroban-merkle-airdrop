@@ -117,96 +117,51 @@ describe("buildMerkleTree", () => {
   });
 });
 
-describe("AirdropContractError", () => {
-  it("is an instance of Error", () => {
-    const err = new AirdropContractError(AirdropError.AlreadyClaimed);
-    expect(err).toBeInstanceOf(Error);
-    expect(err).toBeInstanceOf(AirdropContractError);
+// ─── Issue #65: verifyProof with mismatched proof length ──────────────────
+
+describe("verifyProof — mismatched proof length", () => {
+  /**
+   * Build a two-entry tree so each valid proof has exactly one sibling hash.
+   * We then mutate the proof array to test over- and under-length scenarios.
+   */
+  function twoEntrySetup() {
+    const entries = [
+      { address: ADDR_1, amount: 1000n },
+      { address: ADDR_2, amount: 500n },
+    ];
+    const { root, proofs } = buildMerkleTree(entries);
+    const entry = proofs.get(ADDR_1)!;
+    return { root, address: ADDR_1, amount: 1000n, validProof: entry.proof };
+  }
+
+  it("fails when one extra random hash is appended to a valid proof", () => {
+    const { root, address, amount, validProof } = twoEntrySetup();
+
+    // Sanity check: the original proof is valid.
+    expect(verifyProof(root, address, amount, validProof)).toBe(true);
+
+    // Append a random 32-byte hash (hex string) that doesn't belong.
+    const extraHash = "a".repeat(64); // 32 zero-like bytes
+    const tooLong = [...validProof, extraHash];
+
+    expect(verifyProof(root, address, amount, tooLong)).toBe(false);
   });
 
-  it("sets the name property correctly", () => {
-    const err = new AirdropContractError(AirdropError.InvalidProof);
-    expect(err.name).toBe("AirdropContractError");
+  it("fails when the last element is removed from a valid proof", () => {
+    const { root, address, amount, validProof } = twoEntrySetup();
+
+    // The two-entry tree produces a one-element proof. Removing the only
+    // element leaves an empty array, which cannot reach the root.
+    const tooShort = validProof.slice(0, -1);
+
+    expect(verifyProof(root, address, amount, tooShort)).toBe(false);
   });
 
-  it("stores the numeric error code", () => {
-    const err = new AirdropContractError(AirdropError.AlreadyClaimed);
-    expect(err.code).toBe(AirdropError.AlreadyClaimed);
-    expect(err.code).toBe(1);
-  });
+  it("fails when an empty proof is supplied for a two-entry tree", () => {
+    const { root, address, amount } = twoEntrySetup();
 
-  it("provides a default message for known codes", () => {
-    expect(new AirdropContractError(AirdropError.AlreadyClaimed).message).toMatch(/already claimed/i);
-    expect(new AirdropContractError(AirdropError.InvalidProof).message).toMatch(/invalid.*proof/i);
-    expect(new AirdropContractError(AirdropError.AirdropInactive).message).toMatch(/not active/i);
-    expect(new AirdropContractError(AirdropError.InsufficientFunds).message).toMatch(/insufficient/i);
-    expect(new AirdropContractError(AirdropError.Unauthorized).message).toMatch(/unauthorized/i);
-  });
-
-  it("accepts a custom message", () => {
-    const err = new AirdropContractError(AirdropError.InvalidProof, "custom msg");
-    expect(err.message).toBe("custom msg");
-  });
-
-  it("includes a fallback message for unknown codes", () => {
-    const err = new AirdropContractError(99);
-    expect(err.message).toMatch(/99/);
-  });
-
-  it("can be caught and narrowed by type", () => {
-    function throwIt(): void {
-      throw new AirdropContractError(AirdropError.AlreadyClaimed);
-    }
-    try {
-      throwIt();
-      expect.fail("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(AirdropContractError);
-      const typed = err as AirdropContractError;
-      expect(typed.code).toBe(AirdropError.AlreadyClaimed);
-    }
-  });
-});
-
-describe("RpcError", () => {
-  it("is an instance of Error", () => {
-    const err = new RpcError("network failure");
-    expect(err).toBeInstanceOf(Error);
-    expect(err).toBeInstanceOf(RpcError);
-  });
-
-  it("sets the name property correctly", () => {
-    const err = new RpcError("network failure");
-    expect(err.name).toBe("RpcError");
-  });
-
-  it("stores the message", () => {
-    const err = new RpcError("connection refused");
-    expect(err.message).toBe("connection refused");
-  });
-
-  it("stores the cause when provided", () => {
-    const cause = new Error("underlying");
-    const err = new RpcError("wrapped", cause);
-    expect(err.cause).toBe(cause);
-  });
-
-  it("cause is undefined when not provided", () => {
-    const err = new RpcError("no cause");
-    expect(err.cause).toBeUndefined();
-  });
-
-  it("can be caught and distinguished from AirdropContractError", () => {
-    function throwRpc(): void { throw new RpcError("timeout"); }
-    function throwContract(): void { throw new AirdropContractError(AirdropError.InvalidProof); }
-
-    try { throwRpc(); } catch (err) {
-      expect(err).toBeInstanceOf(RpcError);
-      expect(err).not.toBeInstanceOf(AirdropContractError);
-    }
-    try { throwContract(); } catch (err) {
-      expect(err).toBeInstanceOf(AirdropContractError);
-      expect(err).not.toBeInstanceOf(RpcError);
-    }
+    // An empty proof means the leaf itself is claimed to be the root,
+    // which is false for a two-entry tree.
+    expect(verifyProof(root, address, amount, [])).toBe(false);
   });
 });

@@ -263,19 +263,37 @@ impl AirdropContract {
     // ─── Queries ─────────────────────────────────────────────────────────────
 
     /// Return the Merkle root stored in this contract.
+    ///
+    /// Refreshes instance storage TTL so dormant airdrops with no new claims
+    /// do not have their on-chain data archived.
     pub fn merkle_root(env: Env) -> Option<BytesN<32>> {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         env.storage().instance().get(&DataKey::MerkleRoot)
     }
 
     /// Return `true` if `claimant` has already claimed.
+    ///
+    /// Refreshes instance storage TTL so dormant airdrops with no new claims
+    /// do not have their on-chain data archived.
     pub fn is_claimed(env: Env, claimant: Address) -> bool {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         env.storage()
             .persistent()
             .has(&DataKey::Claimed(claimant))
     }
 
     /// Return whether the airdrop is currently active.
+    ///
+    /// Refreshes instance storage TTL so dormant airdrops with no new claims
+    /// do not have their on-chain data archived.
     pub fn is_active(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         env.storage()
             .instance()
             .get(&DataKey::Active)
@@ -283,17 +301,35 @@ impl AirdropContract {
     }
 
     /// Return the token contract address.
+    ///
+    /// Refreshes instance storage TTL so dormant airdrops with no new claims
+    /// do not have their on-chain data archived.
     pub fn token(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         env.storage().instance().get(&DataKey::TokenAddress)
     }
 
     /// Return the admin address.
+    ///
+    /// Refreshes instance storage TTL so dormant airdrops with no new claims
+    /// do not have their on-chain data archived.
     pub fn admin(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         env.storage().instance().get(&DataKey::Admin)
     }
 
     /// Return total tokens deposited at initialisation.
+    ///
+    /// Refreshes instance storage TTL so dormant airdrops with no new claims
+    /// do not have their on-chain data archived.
     pub fn total_deposited(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         env.storage()
             .instance()
             .get(&DataKey::TotalDeposited)
@@ -301,7 +337,13 @@ impl AirdropContract {
     }
 
     /// Return the expiration timestamp (unix seconds) after which reclaim is allowed.
+    ///
+    /// Refreshes instance storage TTL so dormant airdrops with no new claims
+    /// do not have their on-chain data archived.
     pub fn expiration(env: Env) -> Option<u64> {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         env.storage().instance().get(&DataKey::Expiration)
     }
 }
