@@ -11,6 +11,7 @@ import { resolve } from "path";
 import chalk from "chalk";
 import ora from "ora";
 import { createAirdropClient, verifyProof, NETWORKS } from "@soroban-merkle-airdrop/sdk";
+import { translateContractError } from "../errors.js";
 
 export const claimCommand = new Command("claim")
   .description("Claim tokens from the airdrop")
@@ -71,7 +72,8 @@ export const claimCommand = new Command("claim")
       console.log(`  ${chalk.bold("Address:")} ${result.address}`);
       console.log(`  ${chalk.bold("Amount:")}  ${result.amount.toString()}\n`);
     } catch (err) {
-      spinner.fail(`Error: ${(err as Error).message}`);
+      const message = translateContractError((err as Error).message);
+      spinner.fail(`Error: ${message}`);
       process.exit(1);
     }
   });
