@@ -51,3 +51,72 @@ export interface ClaimResult {
   address: string;
   amount: bigint;
 }
+
+// ─── Typed error classes ─────────────────────────────────────────────────────
+
+/**
+ * Numeric error codes returned by the on-chain airdrop contract.
+ * These must stay in sync with the `AirdropError` enum in contracts/airdrop/src/types.rs.
+ */
+export enum AirdropError {
+  AlreadyClaimed = 1,
+  InvalidProof = 2,
+  AirdropInactive = 3,
+  InsufficientFunds = 4,
+  Unauthorized = 5,
+}
+
+/**
+ * Thrown when the airdrop contract returns a known error code.
+ * Allows callers to distinguish contract-level failures from network issues.
+ *
+ * @example
+ * ```ts
+ * try {
+ *   await client.claim(proof, secretKey);
+ * } catch (err) {
+ *   if (err instanceof AirdropContractError && err.code === AirdropError.AlreadyClaimed) {
+ *     console.log("Already claimed");
+ *   }
+ * }
+ * ```
+ */
+export class AirdropContractError extends Error {
+  /** The numeric error code from the contract (maps to {@link AirdropError}). */
+  readonly code: number;
+
+  constructor(code: number, message?: string) {
+    super(message ?? AirdropContractError.defaultMessage(code));
+    this.name = "AirdropContractError";
+    this.code = code;
+    // Maintain proper prototype chain in transpiled ES5 output.
+    Object.setPrototypeOf(this, AirdropContractError.prototype);
+  }
+
+  private static defaultMessage(code: number): string {
+    switch (code) {
+      case AirdropError.AlreadyClaimed:   return "Address has already claimed";
+      case AirdropError.InvalidProof:     return "Invalid Merkle proof";
+      case AirdropError.AirdropInactive:  return "Airdrop is not active";
+      case AirdropError.InsufficientFunds: return "Insufficient contract funds";
+      case AirdropError.Unauthorized:     return "Unauthorized";
+      default:                            return `Contract error (code ${code})`;
+    }
+  }
+}
+
+/**
+ * Thrown for network-level or RPC errors (connection failures, simulation errors,
+ * transaction submission failures, polling timeouts).
+ */
+export class RpcError extends Error {
+  /** The underlying cause (if available). */
+  readonly cause?: unknown;
+
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = "RpcError";
+    this.cause = cause;
+    Object.setPrototypeOf(this, RpcError.prototype);
+  }
+}

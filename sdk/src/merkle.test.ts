@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildMerkleTree, verifyProof, leafHash } from "../src/merkle.js";
+import { AirdropContractError, RpcError, AirdropError } from "../src/types.js";
 
 const ADDR_1 = "GBTL47RTFR5EKMZSXWOQU735WBK7LRPPDIDK3JTNTCZZ7NUBBRDTVSK2";
 const ADDR_2 = "GBIRYNFBULFVEHPRNOZENOG6RZ4ZPTRDLR7HNMRKHV2QHISIDHOYV6ZN";
