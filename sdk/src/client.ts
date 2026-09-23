@@ -6,6 +6,7 @@ import {
   Contract,
   rpc,
   TransactionBuilder,
+  Transaction,
   BASE_FEE,
   xdr,
   scValToNative,
@@ -126,6 +127,92 @@ export function createAirdropClient(config: NetworkConfig) {
     }
   }
 
+  /**
+   * Build an unsigned claim transaction XDR string for external signing
+   * (e.g. via a browser wallet like Freighter).
+   *
+   * The caller is responsible for signing the returned XDR and submitting it
+   * via `submitSignedTransaction`.
+   *
+   * @param claimProof - The proof package from `buildMerkleTree`.
+   * @returns Base64-encoded unsigned transaction envelope XDR.
+   */
+  async function buildClaimTransaction(claimProof: ClaimProof): Promise<string> {
+    const sourceAccount = await server.getAccount(claimProof.address);
+
+    const proofScVal = xdr.ScVal.scvVec(
+      claimProof.proof.map((h) => {
+        const bytes = Buffer.from(h, "hex");
+        return xdr.ScVal.scvBytes(bytes);
+      })
+    );
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(
+        contractInst.call(
+          "claim",
+          new Address(claimProof.address).toScVal(),
+          nativeToScVal(claimProof.amount, { type: "i128" }),
+          proofScVal
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      const contractCode = parseContractErrorCode(simResult.error);
+      if (contractCode !== null) {
+        throw new AirdropContractError(contractCode);
+      }
+      throw new RpcError(`Simulation failed: ${simResult.error}`);
+    }
+
+    // Assemble (adds auth + footprint) and return as unsigned XDR.
+    return rpc.assembleTransaction(tx, simResult).build().toXDR();
+  }
+
+  /**
+   * Submit a signed transaction XDR produced by an external wallet.
+   *
+   * @param signedXdr - Base64-encoded signed transaction envelope XDR.
+   * @param claimProof - The original proof (used to populate the result).
+   * @returns ClaimResult with the on-chain transaction hash and claimed amount.
+   */
+  async function submitSignedTransaction(
+    signedXdr: string,
+    claimProof: ClaimProof
+  ): Promise<ClaimResult> {
+    const txEnvelope = TransactionBuilder.fromXDR(signedXdr, config.networkPassphrase) as Transaction;
+    const sendResult = await server.sendTransaction(txEnvelope);
+    if (sendResult.status === "ERROR") {
+      throw new RpcError(
+        `Transaction submission failed`,
+        sendResult.errorResult?.toXDR("base64")
+      );
+    }
+
+    const txHash = sendResult.hash;
+    while (true) {
+      await sleep(2000);
+      const poll = await server.getTransaction(txHash);
+      if (poll.status === "SUCCESS") {
+        return {
+          success: true,
+          txHash,
+          address: claimProof.address,
+          amount: claimProof.amount,
+        };
+      }
+      if (poll.status === "FAILED") {
+        throw new RpcError(`Transaction failed on-chain: ${txHash}`);
+      }
+    }
+  }
+
   async function simulateRead(operation: xdr.Operation): Promise<xdr.ScVal> {
     const dummy = Keypair.random();
     const account = new Account(dummy.publicKey(), "0");
@@ -148,7 +235,7 @@ export function createAirdropClient(config: NetworkConfig) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  return { isClaimed, isActive, merkleRoot, totalDeposited, claim };
+  return { isClaimed, isActive, merkleRoot, totalDeposited, claim, buildClaimTransaction, submitSignedTransaction };
 }
 
 /**

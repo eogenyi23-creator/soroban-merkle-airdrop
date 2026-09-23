@@ -2,6 +2,11 @@
 
 import { useState } from "react";
 import { createAirdropClient, verifyProof, NETWORKS } from "@soroban-merkle-airdrop/sdk";
+import {
+  getPublicKey,
+  signTransaction,
+  isConnected,
+} from "@stellar/freighter-api";
 
 const CONTRACT_ID = process.env.NEXT_PUBLIC_AIRDROP_CONTRACT_ID ?? "";
 const NETWORK = (process.env.NEXT_PUBLIC_NETWORK ?? "testnet") as "testnet" | "mainnet";
@@ -22,11 +27,13 @@ type Status =
 type TreeSource = "url" | "paste";
 
 export default function ClaimPage() {
-  const [address, setAddress] = useState("");
-  const [secretKey, setSecretKey] = useState("");
+  // Wallet state — no secret key ever stored
+  const [walletAddress, setWalletAddress] = useState("");
+  const [walletConnected, setWalletConnected] = useState(false);
+  const [walletError, setWalletError] = useState("");
 
   // URL-based tree loading
-  const [treeSource, setTreeSource] = useState<TreeSource>(DEFAULT_TREE_URL ? "url" : "url");
+  const [treeSource, setTreeSource] = useState<TreeSource>("url");
   const [treeUrl, setTreeUrl] = useState(DEFAULT_TREE_URL);
   const [isFetching, setIsFetching] = useState(false);
   const [fetchError, setFetchError] = useState("");
@@ -41,6 +48,27 @@ export default function ClaimPage() {
   const [message, setMessage] = useState("");
   const [txHash, setTxHash] = useState("");
 
+  // ─── Connect Wallet (Freighter) ─────────────────────────────────────────────
+
+  async function handleConnectWallet() {
+    setWalletError("");
+    try {
+      const connected = await isConnected();
+      if (!connected) {
+        setWalletError(
+          "Freighter wallet is not installed. " +
+            "Install it from https://freighter.app and refresh the page."
+        );
+        return;
+      }
+      const publicKey = await getPublicKey();
+      setWalletAddress(publicKey);
+      setWalletConnected(true);
+    } catch (err) {
+      setWalletError((err as Error).message ?? String(err));
+    }
+  }
+
   // ─── Fetch tree from URL ────────────────────────────────────────────────────
 
   async function handleFetchTree() {
@@ -54,7 +82,6 @@ export default function ClaimPage() {
       try {
         response = await fetch(treeUrl.trim());
       } catch (networkErr) {
-        // Likely a CORS or network error
         const msg = (networkErr as Error).message ?? String(networkErr);
         const isCors =
           msg.toLowerCase().includes("cors") ||
@@ -64,7 +91,7 @@ export default function ClaimPage() {
           throw new Error(
             "Could not fetch the tree — the server may be blocking cross-origin requests (CORS). " +
               "Try hosting the JSON file on a CORS-enabled storage service (e.g. GitHub Pages, S3 + CORS policy, " +
-              "or Cloudflare R2) or paste the file contents directly using the \"Paste JSON\" tab."
+              'or Cloudflare R2) or paste the file contents directly using the "Paste JSON" tab.'
           );
         }
         throw new Error(`Network error: ${msg}`);
@@ -124,19 +151,19 @@ export default function ClaimPage() {
   // ─── Eligibility check ──────────────────────────────────────────────────────
 
   async function handleCheck() {
-    if (!address.trim()) return;
+    if (!walletAddress.trim()) return;
     setStatus("checking");
     setMessage("");
     try {
       if (!CONTRACT_ID) throw new Error("Airdrop contract not configured (NEXT_PUBLIC_AIRDROP_CONTRACT_ID is not set)");
       const client = createAirdropClient({ ...NETWORKS[NETWORK], contractId: CONTRACT_ID });
-      const claimed = await client.isClaimed(address.trim());
+      const claimed = await client.isClaimed(walletAddress.trim());
       if (claimed) {
         setStatus("claimed");
         setMessage("This address has already claimed.");
       } else if (treeData) {
         const proofs = treeData.proofs as Record<string, { amount: string; proof: string[] }>;
-        const entry = proofs[address.trim()];
+        const entry = proofs[walletAddress.trim()];
         if (!entry) {
           setStatus("not_eligible");
           setMessage("This address is not in the airdrop list.");
@@ -154,18 +181,18 @@ export default function ClaimPage() {
     }
   }
 
-  // ─── Claim ──────────────────────────────────────────────────────────────────
+  // ─── Claim (signed via Freighter, no secret key) ────────────────────────────
 
   async function handleClaim() {
-    if (!treeData || !secretKey) return;
+    if (!treeData || !walletAddress) return;
     setStatus("claiming");
     try {
       const proofs = treeData.proofs as Record<string, { amount: string; proof: string[] }>;
-      const entry = proofs[address.trim()];
+      const entry = proofs[walletAddress.trim()];
       if (!entry) throw new Error("Address not found in merkle tree");
 
       const proof = {
-        address: address.trim(),
+        address: walletAddress.trim(),
         amount: BigInt(entry.amount),
         proof: entry.proof,
       };
@@ -176,7 +203,15 @@ export default function ClaimPage() {
       }
 
       const client = createAirdropClient({ ...NETWORKS[NETWORK], contractId: CONTRACT_ID });
-      const result = await client.claim(proof, secretKey);
+      // Build the unsigned XDR transaction, then hand it to Freighter to sign.
+      const unsignedXdr = await client.buildClaimTransaction(proof);
+      const signedXdr = await signTransaction(unsignedXdr, {
+        networkPassphrase:
+          NETWORK === "mainnet"
+            ? "Public Global Stellar Network ; September 2015"
+            : "Test SDF Network ; September 2015",
+      });
+      const result = await client.submitSignedTransaction(signedXdr, proof);
       setTxHash(result.txHash);
       setStatus("success");
       setMessage(`Successfully claimed ${result.amount.toString()} tokens!`);
@@ -203,22 +238,54 @@ export default function ClaimPage() {
     <div>
       <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>Check &amp; Claim</h1>
       <p style={{ color: "#888", marginBottom: 32 }}>
-        Enter your Stellar address to check eligibility, then claim your tokens.
+        Connect your Freighter wallet to check eligibility and claim your tokens.
       </p>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        {/* ── Stellar address ── */}
-        <label style={{ fontSize: 13, color: "#aaa" }}>
-          YOUR STELLAR ADDRESS
-          <input
-            type="text"
-            value={address}
-            onChange={(e) => setAddress(e.target.value)}
-            placeholder="G... or C..."
-            style={inputStyle}
-            aria-label="Stellar address"
-          />
-        </label>
+
+        {/* ── Wallet connect ── */}
+        {!walletConnected ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <button
+              onClick={handleConnectWallet}
+              style={btnStyle("#8ae4ff")}
+              aria-label="Connect Freighter wallet"
+            >
+              Connect Wallet
+            </button>
+            {walletError && (
+              <div
+                role="alert"
+                style={{
+                  padding: "12px 16px",
+                  borderRadius: 8,
+                  background: "#111",
+                  border: "1px solid #ff6b6b",
+                  color: "#ff6b6b",
+                  fontSize: 13,
+                }}
+              >
+                {walletError}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div
+            role="status"
+            style={{
+              padding: "12px 16px",
+              borderRadius: 8,
+              background: "#111",
+              border: "1px solid #4caf50",
+              color: "#4caf50",
+              fontSize: 13,
+              fontFamily: "monospace",
+              wordBreak: "break-all",
+            }}
+          >
+            ✓ Wallet connected: {walletAddress}
+          </div>
+        )}
 
         {/* ── Merkle tree source tabs ── */}
         <div>
@@ -247,10 +314,7 @@ export default function ClaimPage() {
 
           {/* ── URL panel ── */}
           {treeSource === "url" && (
-            <div
-              role="tabpanel"
-              style={{ display: "flex", flexDirection: "column", gap: 10 }}
-            >
+            <div role="tabpanel" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <label style={{ fontSize: 13, color: "#aaa" }}>
                 MERKLE TREE URL
                 <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
@@ -265,12 +329,7 @@ export default function ClaimPage() {
                   <button
                     onClick={handleFetchTree}
                     disabled={!treeUrl.trim() || isFetching}
-                    style={{
-                      ...btnStyle("#8ae4ff"),
-                      width: "auto",
-                      padding: "0 20px",
-                      whiteSpace: "nowrap",
-                    }}
+                    style={{ ...btnStyle("#8ae4ff"), width: "auto", padding: "0 20px", whiteSpace: "nowrap" }}
                     aria-label="Fetch merkle tree from URL"
                   >
                     {isFetching ? "Fetching…" : "Fetch Tree"}
@@ -291,17 +350,7 @@ export default function ClaimPage() {
               )}
 
               {fetchError && (
-                <div
-                  role="alert"
-                  style={{
-                    padding: "12px 16px",
-                    borderRadius: 8,
-                    background: "#111",
-                    border: "1px solid #ff6b6b",
-                    color: "#ff6b6b",
-                    fontSize: 13,
-                  }}
-                >
+                <div role="alert" style={{ padding: "12px 16px", borderRadius: 8, background: "#111", border: "1px solid #ff6b6b", color: "#ff6b6b", fontSize: 13 }}>
                   {fetchError}
                 </div>
               )}
@@ -316,7 +365,7 @@ export default function ClaimPage() {
                 <textarea
                   value={proofJson}
                   onChange={(e) => handlePasteChange(e.target.value)}
-                  placeholder='Paste your merkle-tree.json contents here…'
+                  placeholder="Paste your merkle-tree.json contents here…"
                   rows={6}
                   style={{ ...inputStyle, fontFamily: "monospace", fontSize: 12 }}
                   aria-label="Merkle proof JSON"
@@ -330,18 +379,7 @@ export default function ClaimPage() {
               )}
 
               {fetchError && (
-                <div
-                  role="alert"
-                  style={{
-                    marginTop: 8,
-                    padding: "12px 16px",
-                    borderRadius: 8,
-                    background: "#111",
-                    border: "1px solid #ff6b6b",
-                    color: "#ff6b6b",
-                    fontSize: 13,
-                  }}
-                >
+                <div role="alert" style={{ marginTop: 8, padding: "12px 16px", borderRadius: 8, background: "#111", border: "1px solid #ff6b6b", color: "#ff6b6b", fontSize: 13 }}>
                   {fetchError}
                 </div>
               )}
@@ -352,7 +390,7 @@ export default function ClaimPage() {
         {/* ── Check button ── */}
         <button
           onClick={handleCheck}
-          disabled={!address || status === "checking"}
+          disabled={!walletConnected || status === "checking"}
           style={btnStyle("#8ae4ff")}
         >
           {status === "checking" ? "Checking..." : "Check Eligibility"}
@@ -362,41 +400,21 @@ export default function ClaimPage() {
         {status !== "idle" && message && (
           <div
             role="status"
-            style={{
-              padding: "12px 16px",
-              borderRadius: 8,
-              background: "#111",
-              border: `1px solid ${statusColor[status]}`,
-              color: statusColor[status],
-              fontSize: 14,
-            }}
+            style={{ padding: "12px 16px", borderRadius: 8, background: "#111", border: `1px solid ${statusColor[status]}`, color: statusColor[status], fontSize: 14 }}
           >
             {message}
           </div>
         )}
 
-        {/* ── Claim form ── */}
-        {(status === "eligible" || status === "claiming") && treeLoaded && (
-          <>
-            <label style={{ fontSize: 13, color: "#aaa" }}>
-              SECRET KEY (to sign the claim transaction — never sent to any server)
-              <input
-                type="password"
-                value={secretKey}
-                onChange={(e) => setSecretKey(e.target.value)}
-                placeholder="S..."
-                style={inputStyle}
-                aria-label="Stellar secret key"
-              />
-            </label>
-            <button
-              onClick={handleClaim}
-              disabled={!secretKey || status === "claiming"}
-              style={btnStyle("#4caf50")}
-            >
-              {status === "claiming" ? "Claiming..." : "Claim Tokens →"}
-            </button>
-          </>
+        {/* ── Claim button (no secret key field) ── */}
+        {(status === "eligible" || status === "claiming") && treeLoaded && walletConnected && (
+          <button
+            onClick={handleClaim}
+            disabled={status === "claiming"}
+            style={btnStyle("#4caf50")}
+          >
+            {status === "claiming" ? "Claiming..." : "Claim Tokens →"}
+          </button>
         )}
 
         {/* ── Success link ── */}
