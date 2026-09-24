@@ -17,7 +17,9 @@ fn setup() -> (Env, Address, Address, Address) {
     env.mock_all_auths();
 
     let admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
     let contract_id = env.register(AirdropContract, ());
 
     (env, admin, token_id, contract_id)
@@ -53,7 +55,11 @@ fn build_two_leaf_tree(
 fn merkle_pair(env: &Env, a: BytesN<32>, b: BytesN<32>) -> BytesN<32> {
     use soroban_sdk::Bytes;
     let mut data = Bytes::new(env);
-    let (first, second) = if a.as_ref() <= b.as_ref() { (a, b) } else { (b, a) };
+    let (first, second) = if a.as_ref() <= b.as_ref() {
+        (a, b)
+    } else {
+        (b, a)
+    };
     data.append(&first.into());
     data.append(&second.into());
     env.crypto().sha256(&data).into()
@@ -179,7 +185,10 @@ fn test_pause_and_unpause() {
         *topics == (symbol_short!("paused"), admin.clone()).into_val(&env)
             && *data == false.into_val(&env)
     });
-    assert!(pause_event.is_some(), "set_active(false) must emit a 'paused' event with data=false");
+    assert!(
+        pause_event.is_some(),
+        "set_active(false) must emit a 'paused' event with data=false"
+    );
 
     // ── Unpause ──────────────────────────────────────────────────────────────
     client.set_active(&true);
@@ -193,7 +202,10 @@ fn test_pause_and_unpause() {
         *topics == (symbol_short!("paused"), admin.clone()).into_val(&env)
             && *data == true.into_val(&env)
     });
-    assert!(unpause_event.is_some(), "set_active(true) must emit a 'paused' event with data=true");
+    assert!(
+        unpause_event.is_some(),
+        "set_active(true) must emit a 'paused' event with data=true"
+    );
 }
 
 /// Issue #12: set_active on an uninitialised contract must NOT emit an event —
@@ -334,7 +346,10 @@ fn test_query_is_claimed_extends_ttl() {
     client.is_claimed(&claimant);
 
     let ttl_after = env.storage().instance().get_ttl();
-    assert!(ttl_after > 1, "is_claimed() must refresh instance TTL; got {ttl_after}");
+    assert!(
+        ttl_after > 1,
+        "is_claimed() must refresh instance TTL; got {ttl_after}"
+    );
 }
 
 #[test]
@@ -351,7 +366,10 @@ fn test_query_is_active_extends_ttl() {
     client.is_active();
 
     let ttl_after = env.storage().instance().get_ttl();
-    assert!(ttl_after > 1, "is_active() must refresh instance TTL; got {ttl_after}");
+    assert!(
+        ttl_after > 1,
+        "is_active() must refresh instance TTL; got {ttl_after}"
+    );
 }
 
 #[test]
@@ -368,7 +386,10 @@ fn test_query_token_extends_ttl() {
     client.token();
 
     let ttl_after = env.storage().instance().get_ttl();
-    assert!(ttl_after > 1, "token() must refresh instance TTL; got {ttl_after}");
+    assert!(
+        ttl_after > 1,
+        "token() must refresh instance TTL; got {ttl_after}"
+    );
 }
 
 #[test]
@@ -385,7 +406,10 @@ fn test_query_admin_extends_ttl() {
     client.admin();
 
     let ttl_after = env.storage().instance().get_ttl();
-    assert!(ttl_after > 1, "admin() must refresh instance TTL; got {ttl_after}");
+    assert!(
+        ttl_after > 1,
+        "admin() must refresh instance TTL; got {ttl_after}"
+    );
 }
 
 #[test]
@@ -402,7 +426,10 @@ fn test_query_total_deposited_extends_ttl() {
     client.total_deposited();
 
     let ttl_after = env.storage().instance().get_ttl();
-    assert!(ttl_after > 1, "total_deposited() must refresh instance TTL; got {ttl_after}");
+    assert!(
+        ttl_after > 1,
+        "total_deposited() must refresh instance TTL; got {ttl_after}"
+    );
 }
 
 #[test]
@@ -419,7 +446,10 @@ fn test_query_expiration_extends_ttl() {
     client.expiration();
 
     let ttl_after = env.storage().instance().get_ttl();
-    assert!(ttl_after > 1, "expiration() must refresh instance TTL; got {ttl_after}");
+    assert!(
+        ttl_after > 1,
+        "expiration() must refresh instance TTL; got {ttl_after}"
+    );
 }
 
 // ─── Issue 3: Negative amount tests ────────────────────────────────────────
@@ -478,7 +508,8 @@ fn test_non_admin_set_active_fails() {
             args: (false,).into_val(&env),
             sub_invokes: &[],
         },
-    }.into()]);
+    }
+    .into()]);
 
     // This should panic because the stored admin's auth is not satisfied.
     client.set_active(&false);
@@ -509,7 +540,8 @@ fn test_non_admin_reclaim_fails() {
             args: ().into_val(&env),
             sub_invokes: &[],
         },
-    }.into()]);
+    }
+    .into()]);
 
     // This should panic because the stored admin's auth is not satisfied.
     client.reclaim();
@@ -547,12 +579,14 @@ fn test_leaf_hash_known_vector() {
 
     // Expected value: output of the TypeScript SDK's leafHash() for the same
     // inputs. Pasted literally — not computed by any Rust hashing logic.
-    let expected = BytesN::from_array(&env, &[
-        0x7c, 0x71, 0x75, 0xb9, 0x51, 0xbe, 0x4c, 0x0b,
-        0xc4, 0x23, 0x31, 0x70, 0x88, 0x40, 0xf3, 0x97,
-        0xc1, 0x48, 0x78, 0x8c, 0x89, 0x11, 0xa7, 0xcf,
-        0x1b, 0x06, 0x22, 0xf2, 0x88, 0xb3, 0xa6, 0xce,
-    ]);
+    let expected = BytesN::from_array(
+        &env,
+        &[
+            0x7c, 0x71, 0x75, 0xb9, 0x51, 0xbe, 0x4c, 0x0b, 0xc4, 0x23, 0x31, 0x70, 0x88, 0x40,
+            0xf3, 0x97, 0xc1, 0x48, 0x78, 0x8c, 0x89, 0x11, 0xa7, 0xcf, 0x1b, 0x06, 0x22, 0xf2,
+            0x88, 0xb3, 0xa6, 0xce,
+        ],
+    );
 
     let actual = merkle::leaf_hash(&env, &address, amount);
     assert_eq!(
@@ -596,7 +630,9 @@ fn test_restore_requires_no_auth() {
     let env = Env::default();
     // Do NOT mock all auths — this verifies restore() passes without any auth.
     let admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
     let contract_id = env.register(AirdropContract, ());
     let client = AirdropContractClient::new(&env, &contract_id);
 
