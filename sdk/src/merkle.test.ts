@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "fs";
+import { resolve } from "path";
 import { buildMerkleTree, verifyProof, leafHash } from "../src/merkle.js";
 import { AirdropContractError, RpcError, AirdropError } from "../src/types.js";
 
@@ -164,4 +166,43 @@ describe("verifyProof — mismatched proof length", () => {
     // which is false for a two-entry tree.
     expect(verifyProof(root, address, amount, [])).toBe(false);
   });
+});
+
+// ─── Issue #32: Cross-language leaf-hash test vector suite ──────────────────
+
+/**
+ * Load the shared test-vector file and verify that leafHash() in TypeScript
+ * produces byte-for-byte identical output to the Rust contract's leaf_hash()
+ * for every entry.
+ *
+ * A mismatch means the two implementations have diverged — which would silently
+ * break all claims because proof verification depends on leaf hash parity.
+ *
+ * Vectors cover: G-addresses, C-addresses, amount=1, amount=i128::MAX,
+ * amounts where only the high 64-bit word is set, and typical amounts.
+ */
+describe("leafHash — cross-language test vectors", () => {
+  interface LeafHashVector {
+    _comment?: string;
+    address: string;
+    amount: string;
+    expected_leaf_hex: string;
+  }
+
+  const vectorsPath = resolve(process.cwd(), "../test-vectors/leaf-hash-vectors.json");
+  const vectors: LeafHashVector[] = JSON.parse(readFileSync(vectorsPath, "utf8"));
+
+  it("has at least 10 vectors", () => {
+    expect(vectors.length).toBeGreaterThanOrEqual(10);
+  });
+
+  for (const [i, v] of vectors.entries()) {
+    it(`vector ${i}: ${v.address.slice(0, 6)}... amount=${v.amount}`, () => {
+      const actual = leafHash(v.address, BigInt(v.amount));
+      expect(actual.toString("hex")).toBe(
+        v.expected_leaf_hex,
+        `vector ${i} (${v.address}, ${v.amount}): TypeScript leafHash does not match expected hex`
+      );
+    });
+  }
 });

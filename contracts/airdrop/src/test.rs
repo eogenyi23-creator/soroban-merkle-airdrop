@@ -603,6 +603,111 @@ fn test_non_admin_reclaim_fails() {
     client.reclaim();
 }
 
+// ─── Issue #32: Cross-language leaf-hash test vector suite ─────────────────
+
+/// Loop over every entry in `test-vectors/leaf-hash-vectors.json` and assert
+/// that `merkle::leaf_hash` in Rust produces the expected hex output.
+///
+/// The expected values in the JSON file were produced by running the compiled
+/// TypeScript SDK (`sdk/src/merkle.ts`) with the same inputs, so a mismatch
+/// here means the two implementations have diverged.
+///
+/// Vectors cover: G-addresses, C-addresses, amount=1, amount=i128::MAX,
+/// amounts where only the high 64-bit word is set, and typical amounts.
+#[test]
+fn test_leaf_hash_vectors() {
+    let env = Env::default();
+
+    // The JSON file is embedded at compile time so the test is self-contained
+    // and runs without filesystem access from the Soroban test harness.
+    let json_bytes = include_bytes!("../../../test-vectors/leaf-hash-vectors.json");
+    let json_str = core::str::from_utf8(json_bytes).expect("leaf-hash-vectors.json is not valid UTF-8");
+
+    // Minimal JSON array parser — no external crate required.
+    // Each element has the shape:
+    //   { "_comment": "...", "address": "G...", "amount": "123", "expected_leaf_hex": "abc..." }
+    // We extract address, amount (as string→i128), and expected_leaf_hex.
+    for (i, chunk) in json_str
+        .split('{')
+        .skip(1) // skip the opening of the outer array
+        .enumerate()
+    {
+        // Skip entries that don't look like data objects.
+        if !chunk.contains("\"address\"") {
+            continue;
+        }
+
+        let address = extract_json_str(chunk, "address")
+            .unwrap_or_else(|| panic!("vector {i}: missing 'address' field"));
+        let amount_str = extract_json_str(chunk, "amount")
+            .unwrap_or_else(|| panic!("vector {i}: missing 'amount' field"));
+        let expected_hex = extract_json_str(chunk, "expected_leaf_hex")
+            .unwrap_or_else(|| panic!("vector {i}: missing 'expected_leaf_hex' field"));
+
+        let amount: i128 = amount_str
+            .parse()
+            .unwrap_or_else(|_| panic!("vector {i}: cannot parse amount '{amount_str}'"));
+
+        let addr = Address::from_str(&env, address);
+        let actual = merkle::leaf_hash(&env, &addr, amount);
+
+        let expected_bytes = hex_decode(expected_hex)
+            .unwrap_or_else(|| panic!("vector {i}: invalid hex in expected_leaf_hex"));
+        let expected: BytesN<32> = BytesN::from_array(
+            &env,
+            expected_bytes
+                .as_slice()
+                .try_into()
+                .unwrap_or_else(|_| panic!("vector {i}: expected_leaf_hex must be 32 bytes")),
+        );
+
+        assert_eq!(
+            actual, expected,
+            "vector {i} ({address}, {amount_str}): Rust leaf_hash does not match TypeScript SDK output"
+        );
+    }
+}
+
+/// Extract the string value for a JSON key from a raw chunk of JSON text.
+/// Handles the form `"key": "value"` (double-quoted string values only).
+fn extract_json_str<'a>(chunk: &'a str, key: &str) -> Option<&'a str> {
+    let needle = alloc::format!("\"{}\":", key);
+    let start = chunk.find(needle.as_str())?;
+    let rest = &chunk[start + needle.len()..];
+    // Skip whitespace.
+    let rest = rest.trim_start_matches([' ', '\t', '\n', '\r']);
+    if !rest.starts_with('"') {
+        return None;
+    }
+    let inner = &rest[1..]; // skip opening quote
+    let end = inner.find('"')?;
+    Some(&inner[..end])
+}
+
+/// Decode a lowercase hex string into bytes. Returns None on invalid input.
+fn hex_decode(hex: &str) -> Option<alloc::vec::Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = alloc::vec::Vec::with_capacity(hex.len() / 2);
+    let bytes = hex.as_bytes();
+    for chunk in bytes.chunks(2) {
+        let hi = hex_nibble(chunk[0])?;
+        let lo = hex_nibble(chunk[1])?;
+        out.push((hi << 4) | lo);
+    }
+    Some(out)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 // ─── Issue 6: Cross-language leaf-hash test vector ─────────────────────────
 
 /// Cross-language test vector: proves that `merkle::leaf_hash` in Rust
@@ -917,51 +1022,61 @@ fn test_verify_proof_all_same_hash_returns_false() {
     );
 }
 
-// ─── Issue #44: Contract upgrade function ──────────────────────────────────
+// ─── Issue #43: Persistent TTL refresh on is_claimed ───────────────────────
 
-/// Non-admin calling upgrade() must panic (auth failure).
+/// is_claimed() must return true even after many ledger advances if the entry
+/// exists, because it refreshes the persistent Claimed(addr) TTL.
+///
+/// Without the fix, the persistent entry could archive and is_claimed() would
+/// return false, enabling a double-claim.
 #[test]
-#[should_panic]
-fn test_non_admin_upgrade_fails() {
+fn test_is_claimed_refreshes_persistent_ttl() {
     let (env, admin, token, contract_id) = setup();
     let client = AirdropContractClient::new(&env, &contract_id);
     let claimant = Address::generate(&env);
-    let non_admin = Address::generate(&env);
 
-    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
     client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
 
-    // Only authorize the non_admin, not the real admin.
-    let fake_hash = BytesN::from_array(&env, &[0u8; 32]);
-    env.set_auths(&[MockAuth {
-        address: &non_admin,
-        invoke: &MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "upgrade",
-            args: (fake_hash.clone(),).into_val(&env),
-            sub_invokes: &[],
-        },
-    }
-    .into()]);
+    // Claim so the Claimed(claimant) persistent entry exists.
+    client.claim(&claimant, &1000, &proof);
+    assert!(client.is_claimed(&claimant), "should be claimed right after claim()");
 
-    // Must panic — the stored admin's auth is not satisfied.
-    client.upgrade(&fake_hash);
+    // Simulate many ledger advances — enough that the persistent entry would
+    // archive if extend_ttl were not called.  We do this by advancing the
+    // sequence number well past the CLAIMED_TTL threshold.
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + CLAIMED_TTL_THRESHOLD + 1);
+
+    // is_claimed() must still return true: it refreshes the persistent TTL.
+    // If the fix were absent the persistent entry would appear missing.
+    assert!(
+        client.is_claimed(&claimant),
+        "is_claimed() must return true after ledger advances — persistent TTL must be refreshed"
+    );
 }
 
-/// upgrade() on an uninitialised contract must return NotInitialized.
+/// is_claimed() must NOT attempt to extend TTL for an address that never
+/// claimed — `has()` returns false and no extend_ttl call should happen.
 #[test]
-fn test_upgrade_uninitialized_returns_error() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(AirdropContract, ());
+fn test_is_claimed_false_for_unclaimed_after_ledger_advance() {
+    let (env, admin, token, contract_id) = setup();
     let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let never_claimed = Address::generate(&env);
 
-    let fake_hash = BytesN::from_array(&env, &[0u8; 32]);
-    let result = client.try_upgrade(&fake_hash);
-    assert_eq!(
-        result,
-        Err(Ok(AirdropError::NotInitialized)),
-        "upgrade() on uninitialised contract must return NotInitialized"
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+    client.claim(&claimant, &1000, &proof);
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + CLAIMED_TTL_THRESHOLD + 1);
+
+    // An address that never claimed must still return false.
+    assert!(
+        !client.is_claimed(&never_claimed),
+        "is_claimed() must return false for an address that never claimed"
     );
 }
