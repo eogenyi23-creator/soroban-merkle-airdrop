@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+extern crate alloc;
+
 use super::*;
 use soroban_sdk::{
     testutils::{storage::Instance as _, Address as _, Events, Ledger, MockAuth, MockAuthInvoke},
@@ -912,5 +914,54 @@ fn test_verify_proof_all_same_hash_returns_false() {
     assert!(
         !merkle::verify_proof(&env, &legitimate_root, leaf.clone(), &bogus_proof),
         "all-same-hash proof against a real root must return false"
+    );
+}
+
+// ─── Issue #44: Contract upgrade function ──────────────────────────────────
+
+/// Non-admin calling upgrade() must panic (auth failure).
+#[test]
+#[should_panic]
+fn test_non_admin_upgrade_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    // Only authorize the non_admin, not the real admin.
+    let fake_hash = BytesN::from_array(&env, &[0u8; 32]);
+    env.set_auths(&[MockAuth {
+        address: &non_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "upgrade",
+            args: (fake_hash.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }
+    .into()]);
+
+    // Must panic — the stored admin's auth is not satisfied.
+    client.upgrade(&fake_hash);
+}
+
+/// upgrade() on an uninitialised contract must return NotInitialized.
+#[test]
+fn test_upgrade_uninitialized_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AirdropContract, ());
+    let client = AirdropContractClient::new(&env, &contract_id);
+
+    let fake_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_upgrade(&fake_hash);
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::NotInitialized)),
+        "upgrade() on uninitialised contract must return NotInitialized"
     );
 }
