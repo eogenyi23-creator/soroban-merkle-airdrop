@@ -39,9 +39,8 @@ mod types;
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, contractmeta, symbol_short,
-    token::Client as TokenClient,
-    Address, BytesN, Env, Vec,
+    contract, contractimpl, contractmeta, symbol_short, token::Client as TokenClient, Address,
+    BytesN, Env, Vec,
 };
 use types::{AirdropError, DataKey};
 
@@ -62,6 +61,13 @@ const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL / 2;
 #[contract]
 pub struct AirdropContract;
 
+// `Events::publish` is deprecated in soroban-sdk 27 in favour of the
+// `#[contractevent]` macro. The macro derives the first topic from the event
+// struct's name, so switching would rename every topic this contract emits
+// ("init", "claimed", "paused", "reclaimed") and break indexers and the event
+// assertions in `src/test.rs`. That is an ABI change, not a lint fix, so the
+// deprecation is allowed here until it is done deliberately.
+#[allow(deprecated)]
 #[contractimpl]
 impl AirdropContract {
     // ─── Initialisation ──────────────────────────────────────────────────────
@@ -98,23 +104,23 @@ impl AirdropContract {
 
         // Transfer tokens from admin into the contract.
         let token_client = TokenClient::new(&env, &token);
-        token_client.transfer(
-            &admin,
-            &env.current_contract_address(),
-            &total_amount,
-        );
+        token_client.transfer(&admin, env.current_contract_address(), &total_amount);
 
-        env.storage().instance().set(&DataKey::MerkleRoot, &merkle_root);
+        env.storage()
+            .instance()
+            .set(&DataKey::MerkleRoot, &merkle_root);
         env.storage().instance().set(&DataKey::TokenAddress, &token);
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::TotalDeposited, &total_amount);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDeposited, &total_amount);
         env.storage().instance().set(&DataKey::Active, &true);
-        env.storage().instance().set(&DataKey::Expiration, &expiration);
+        env.storage()
+            .instance()
+            .set(&DataKey::Expiration, &expiration);
 
-        env.events().publish(
-            (symbol_short!("init"), admin),
-            (merkle_root, total_amount),
-        );
+        env.events()
+            .publish((symbol_short!("init"), admin), (merkle_root, total_amount));
 
         Ok(())
     }
@@ -180,11 +186,9 @@ impl AirdropContract {
 
         // Mark as claimed before transfer (re-entrancy guard).
         env.storage().persistent().set(&claimed_key, &true);
-        env.storage().persistent().extend_ttl(
-            &claimed_key,
-            CLAIMED_TTL_THRESHOLD,
-            CLAIMED_TTL,
-        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&claimed_key, CLAIMED_TTL_THRESHOLD, CLAIMED_TTL);
 
         // Transfer tokens to claimant.
         let token: Address = env
@@ -198,10 +202,8 @@ impl AirdropContract {
             &amount,
         );
 
-        env.events().publish(
-            (symbol_short!("claimed"), claimant.clone()),
-            amount,
-        );
+        env.events()
+            .publish((symbol_short!("claimed"), claimant.clone()), amount);
 
         Ok(())
     }
@@ -222,9 +224,37 @@ impl AirdropContract {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Active, &active);
 
+        env.events()
+            .publish((symbol_short!("paused"), admin), active);
+
+        Ok(())
+    }
+
+    /// Transfer admin ownership to a new address.
+    ///
+    /// The current admin must authorise this call. Once transferred, the new
+    /// admin has full control over `set_active`, `reclaim`, and future
+    /// `transfer_admin` calls.
+    ///
+    /// Emits an event with topic `("admin_transfer", old_admin)` and data
+    /// `new_admin` so off-chain indexers can track ownership history.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_admin` - Address to become the new admin.
+    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), AirdropError> {
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(AirdropError::NotInitialized)?;
+        old_admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+
         env.events().publish(
-            (symbol_short!("paused"), admin),
-            active,
+            (symbol_short!("adm_xfer"), old_admin),
+            new_admin,
         );
 
         Ok(())
@@ -305,9 +335,7 @@ impl AirdropContract {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
-        env.storage()
-            .persistent()
-            .has(&DataKey::Claimed(claimant))
+        env.storage().persistent().has(&DataKey::Claimed(claimant))
     }
 
     /// Return whether the airdrop is currently active.

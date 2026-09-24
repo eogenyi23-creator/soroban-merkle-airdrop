@@ -22,6 +22,7 @@ import { AirdropContractError, RpcError } from "./types.js";
 export function createAirdropClient(config: NetworkConfig) {
   const server = new rpc.Server(config.rpcUrl, { allowHttp: false });
   const contractInst = new Contract(config.contractId);
+  const pollTimeoutMs = config.pollTimeoutMs ?? 60_000;
 
   /** Check if an address has already claimed. */
   async function isClaimed(address: string): Promise<boolean> {
@@ -49,6 +50,17 @@ export function createAirdropClient(config: NetworkConfig) {
   async function totalDeposited(): Promise<bigint> {
     const result = await simulateRead(contractInst.call("total_deposited"));
     return BigInt(scValToNative(result) as number);
+  }
+
+  /**
+   * Fetch the expiration timestamp (Unix seconds) after which reclaim is allowed.
+   * Returns null if the contract has not been initialised or has no expiration set.
+   */
+  async function expiration(): Promise<bigint | null> {
+    const result = await simulateRead(contractInst.call("expiration"));
+    const native = scValToNative(result);
+    if (native === null || native === undefined) return null;
+    return BigInt(native as number);
   }
 
   /**
@@ -110,8 +122,14 @@ export function createAirdropClient(config: NetworkConfig) {
     }
 
     const txHash = sendResult.hash;
+    const claimDeadline = Date.now() + pollTimeoutMs;
     while (true) {
       await sleep(2000);
+      if (Date.now() >= claimDeadline) {
+        throw new RpcError(
+          `Transaction confirmation timeout after ${pollTimeoutMs}ms: ${txHash}`
+        );
+      }
       const poll = await server.getTransaction(txHash);
       if (poll.status === "SUCCESS") {
         return {
@@ -196,8 +214,14 @@ export function createAirdropClient(config: NetworkConfig) {
     }
 
     const txHash = sendResult.hash;
+    const submitDeadline = Date.now() + pollTimeoutMs;
     while (true) {
       await sleep(2000);
+      if (Date.now() >= submitDeadline) {
+        throw new RpcError(
+          `Transaction confirmation timeout after ${pollTimeoutMs}ms: ${txHash}`
+        );
+      }
       const poll = await server.getTransaction(txHash);
       if (poll.status === "SUCCESS") {
         return {
@@ -235,7 +259,7 @@ export function createAirdropClient(config: NetworkConfig) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  return { isClaimed, isActive, merkleRoot, totalDeposited, claim, buildClaimTransaction, submitSignedTransaction };
+  return { isClaimed, isActive, merkleRoot, totalDeposited, expiration, claim, buildClaimTransaction, submitSignedTransaction };
 }
 
 /**
