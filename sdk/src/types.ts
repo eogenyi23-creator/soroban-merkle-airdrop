@@ -28,6 +28,14 @@ export interface NetworkConfig {
   rpcUrl: string;
   networkPassphrase: string;
   contractId: string;
+  /**
+   * Maximum time in milliseconds to wait for a submitted transaction to be
+   * confirmed on-chain. The polling loop throws an RpcError if this limit is
+   * exceeded.
+   *
+   * @default 60000 (60 seconds)
+   */
+  pollTimeoutMs?: number;
 }
 
 /** Well-known network presets. */
