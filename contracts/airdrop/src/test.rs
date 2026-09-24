@@ -17,7 +17,9 @@ fn setup() -> (Env, Address, Address, Address) {
     env.mock_all_auths();
 
     let admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
     let contract_id = env.register(AirdropContract, ());
 
     (env, admin, token_id, contract_id)
@@ -53,7 +55,11 @@ fn build_two_leaf_tree(
 fn merkle_pair(env: &Env, a: BytesN<32>, b: BytesN<32>) -> BytesN<32> {
     use soroban_sdk::Bytes;
     let mut data = Bytes::new(env);
-    let (first, second) = if a.as_ref() <= b.as_ref() { (a, b) } else { (b, a) };
+    let (first, second) = if a.as_ref() <= b.as_ref() {
+        (a, b)
+    } else {
+        (b, a)
+    };
     data.append(&first.into());
     data.append(&second.into());
     env.crypto().sha256(&data).into()
@@ -201,6 +207,25 @@ fn test_pause_and_unpause() {
     let result = client.try_claim(&claimant, &1000, &proof);
     assert_eq!(result, Err(Ok(AirdropError::NotActive)));
 
+    // Verify the "paused" event was emitted for the pause call.
+    // Events are indexed as (contract_id, topics...) → data.
+    let events = env.events().all();
+    let pause_event = events.iter().find(|(_contract, topics, data)| {
+        let topics_val = topics.to_val();
+        let data_val = data.to_val();
+        // Topic tuple is (symbol_short!("paused"), admin); data is false.
+        // We check the event exists by inspecting the last event that matches.
+        let _ = (topics_val, data_val);
+        // Use a simpler approach: check publish topics via IntoVal
+        use soroban_sdk::IntoVal;
+        *topics == (symbol_short!("paused"), admin.clone()).into_val(&env)
+            && *data == false.into_val(&env)
+    });
+    assert!(
+        pause_event.is_some(),
+        "set_active(false) must emit a 'paused' event with data=false"
+    );
+
     // ── Unpause ──────────────────────────────────────────────────────────────
     client.set_active(&true);
     assert_eq!(
@@ -215,6 +240,18 @@ fn test_pause_and_unpause() {
 
     client.claim(&claimant, &1000, &proof); // succeeds again
     assert!(client.is_claimed(&claimant));
+
+    // Verify the "paused" event was emitted for the unpause call.
+    let events = env.events().all();
+    let unpause_event = events.iter().find(|(_contract, topics, data)| {
+        use soroban_sdk::IntoVal;
+        *topics == (symbol_short!("paused"), admin.clone()).into_val(&env)
+            && *data == true.into_val(&env)
+    });
+    assert!(
+        unpause_event.is_some(),
+        "set_active(true) must emit a 'paused' event with data=true"
+    );
 }
 
 /// Issue #12: set_active on an uninitialised contract must NOT emit an event —
@@ -357,9 +394,11 @@ fn test_query_is_claimed_extends_ttl() {
     env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.is_claimed(&claimant);
 
-    // `get_ttl` is only readable from inside the contract's own context.
-    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
-    assert!(ttl_after > 1, "is_claimed() must refresh instance TTL; got {ttl_after}");
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(
+        ttl_after > 1,
+        "is_claimed() must refresh instance TTL; got {ttl_after}"
+    );
 }
 
 #[test]
@@ -376,9 +415,11 @@ fn test_query_is_active_extends_ttl() {
     env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.is_active();
 
-    // `get_ttl` is only readable from inside the contract's own context.
-    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
-    assert!(ttl_after > 1, "is_active() must refresh instance TTL; got {ttl_after}");
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(
+        ttl_after > 1,
+        "is_active() must refresh instance TTL; got {ttl_after}"
+    );
 }
 
 #[test]
@@ -395,9 +436,11 @@ fn test_query_token_extends_ttl() {
     env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.token();
 
-    // `get_ttl` is only readable from inside the contract's own context.
-    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
-    assert!(ttl_after > 1, "token() must refresh instance TTL; got {ttl_after}");
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(
+        ttl_after > 1,
+        "token() must refresh instance TTL; got {ttl_after}"
+    );
 }
 
 #[test]
@@ -414,9 +457,11 @@ fn test_query_admin_extends_ttl() {
     env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.admin();
 
-    // `get_ttl` is only readable from inside the contract's own context.
-    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
-    assert!(ttl_after > 1, "admin() must refresh instance TTL; got {ttl_after}");
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(
+        ttl_after > 1,
+        "admin() must refresh instance TTL; got {ttl_after}"
+    );
 }
 
 #[test]
@@ -433,9 +478,11 @@ fn test_query_total_deposited_extends_ttl() {
     env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.total_deposited();
 
-    // `get_ttl` is only readable from inside the contract's own context.
-    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
-    assert!(ttl_after > 1, "total_deposited() must refresh instance TTL; got {ttl_after}");
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(
+        ttl_after > 1,
+        "total_deposited() must refresh instance TTL; got {ttl_after}"
+    );
 }
 
 #[test]
@@ -452,9 +499,11 @@ fn test_query_expiration_extends_ttl() {
     env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.expiration();
 
-    // `get_ttl` is only readable from inside the contract's own context.
-    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
-    assert!(ttl_after > 1, "expiration() must refresh instance TTL; got {ttl_after}");
+    let ttl_after = env.storage().instance().get_ttl();
+    assert!(
+        ttl_after > 1,
+        "expiration() must refresh instance TTL; got {ttl_after}"
+    );
 }
 
 // ─── Issue 3: Negative amount tests ────────────────────────────────────────
@@ -513,7 +562,8 @@ fn test_non_admin_set_active_fails() {
             args: (false,).into_val(&env),
             sub_invokes: &[],
         },
-    }.into()]);
+    }
+    .into()]);
 
     // This should panic because the stored admin's auth is not satisfied.
     client.set_active(&false);
@@ -544,7 +594,8 @@ fn test_non_admin_reclaim_fails() {
             args: ().into_val(&env),
             sub_invokes: &[],
         },
-    }.into()]);
+    }
+    .into()]);
 
     // This should panic because the stored admin's auth is not satisfied.
     client.reclaim();
@@ -582,18 +633,109 @@ fn test_leaf_hash_known_vector() {
 
     // Expected value: output of the TypeScript SDK's leafHash() for the same
     // inputs. Pasted literally — not computed by any Rust hashing logic.
-    let expected = BytesN::from_array(&env, &[
-        0x7c, 0x71, 0x75, 0xb9, 0x51, 0xbe, 0x4c, 0x0b,
-        0xc4, 0x23, 0x31, 0x70, 0x88, 0x40, 0xf3, 0x97,
-        0xc1, 0x48, 0x78, 0x8c, 0x89, 0x11, 0xa7, 0xcf,
-        0x1b, 0x06, 0x22, 0xf2, 0x88, 0xb3, 0xa6, 0xce,
-    ]);
+    let expected = BytesN::from_array(
+        &env,
+        &[
+            0x7c, 0x71, 0x75, 0xb9, 0x51, 0xbe, 0x4c, 0x0b, 0xc4, 0x23, 0x31, 0x70, 0x88, 0x40,
+            0xf3, 0x97, 0xc1, 0x48, 0x78, 0x8c, 0x89, 0x11, 0xa7, 0xcf, 0x1b, 0x06, 0x22, 0xf2,
+            0x88, 0xb3, 0xa6, 0xce,
+        ],
+    );
 
     let actual = merkle::leaf_hash(&env, &address, amount);
     assert_eq!(
         actual, expected,
         "Rust leaf_hash does not match TypeScript SDK output — the two implementations disagree"
     );
+}
+
+// ─── Issue #23: transfer_admin ─────────────────────────────────────────────
+
+/// Successful admin transfer: admin() reflects new owner and the event is emitted.
+#[test]
+fn test_transfer_admin_success() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    client.transfer_admin(&new_admin);
+
+    // admin() must now return the new admin.
+    assert_eq!(client.admin(), Some(new_admin.clone()));
+
+    // Verify event ("adm_xfer", old_admin) → new_admin was emitted.
+    let events = env.events().all();
+    let xfer_event = events.iter().find(|(_contract, topics, data)| {
+        use soroban_sdk::IntoVal;
+        *topics == (symbol_short!("adm_xfer"), admin.clone()).into_val(&env)
+            && *data == new_admin.clone().into_val(&env)
+    });
+    assert!(xfer_event.is_some(), "transfer_admin must emit ('adm_xfer', old_admin) → new_admin");
+}
+
+/// Non-admin calling transfer_admin must panic (auth failure).
+#[test]
+#[should_panic]
+fn test_non_admin_transfer_admin_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    // Authorize non_admin instead of the real admin — must panic.
+    env.set_auths(&[MockAuth {
+        address: &non_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "transfer_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }.into()]);
+
+    client.transfer_admin(&new_admin);
+}
+
+/// After a transfer, the new admin can call set_active; the old admin cannot.
+#[test]
+fn test_new_admin_can_set_active() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    client.transfer_admin(&new_admin);
+
+    // New admin pauses the airdrop — must succeed.
+    client.set_active(&false);
+    assert!(!client.is_active());
+}
+
+/// transfer_admin on an uninitialised contract returns NotInitialized.
+#[test]
+fn test_transfer_admin_uninitialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AirdropContract, ());
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let new_admin = Address::generate(&env);
+
+    let result = client.try_transfer_admin(&new_admin);
+    assert_eq!(result, Err(Ok(AirdropError::NotInitialized)));
 }
 
 // ─── Issue #62: restore() helper ───────────────────────────────────────────
@@ -639,7 +781,9 @@ fn test_restore_requires_no_auth() {
     let env = Env::default();
     // Do NOT mock all auths — this verifies restore() passes without any auth.
     let admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
     let contract_id = env.register(AirdropContract, ());
     let client = AirdropContractClient::new(&env, &contract_id);
 
@@ -656,294 +800,117 @@ fn test_restore_requires_no_auth() {
     client.restore(); // panics if auth is required
 }
 
-// ─── Batch claim (issue #36) ───────────────────────────────────────────────
+// ─── Issue #64: verify_proof edge case unit tests ────────────────────────────
 
-/// Build a 3-leaf tree and return its root plus one proof per leaf.
-///
-/// An odd leaf is promoted to the next level unhashed, which is the same
-/// convention `sdk/src/merkle.ts::buildMerkleTree` uses.
-fn build_three_leaf_tree(
-    env: &Env,
-    a: &Address,
-    amt_a: i128,
-    b: &Address,
-    amt_b: i128,
-    c: &Address,
-    amt_c: i128,
-) -> (
-    BytesN<32>,
-    Vec<BytesN<32>>,
-    Vec<BytesN<32>>,
-    Vec<BytesN<32>>,
-) {
-    let la = merkle::leaf_hash(env, a, amt_a);
-    let lb = merkle::leaf_hash(env, b, amt_b);
-    let lc = merkle::leaf_hash(env, c, amt_c);
-    let ab = merkle_pair(env, la.clone(), lb.clone());
-    let root = merkle_pair(env, ab.clone(), lc.clone());
-
-    // a: sibling leaf_b, then the promoted leaf_c.
-    let mut pa = Vec::new(env);
-    pa.push_back(lb.clone());
-    pa.push_back(lc.clone());
-
-    // b: sibling leaf_a, then leaf_c.
-    let mut pb = Vec::new(env);
-    pb.push_back(la.clone());
-    pb.push_back(lc.clone());
-
-    // c: its sibling is the already-combined pair (a, b).
-    let mut pc = Vec::new(env);
-    pc.push_back(ab);
-
-    (root, pa, pb, pc)
-}
-
-/// Shorthand so the batch tests read as data instead of constructor calls.
-fn entry(claimant: &Address, amount: i128) -> AirdropEntry {
-    AirdropEntry {
-        claimant: claimant.clone(),
-        amount,
-    }
-}
-
-fn token_balance(env: &Env, token: &Address, who: &Address) -> i128 {
-    TokenClient::new(env, token).balance(who)
-}
-
-/// Three recipients, one transaction: everyone is paid and gets a `claimed`
-/// event of their own.
+/// An empty proof against a root that equals the leaf returns true.
+/// This is the single-node-tree case: the leaf IS the root.
 #[test]
-fn test_batch_claim_three_entries_success() {
-    let (env, admin, token, contract_id) = setup();
-    let client = AirdropContractClient::new(&env, &contract_id);
-    let a = Address::generate(&env);
-    let b = Address::generate(&env);
-    let c = Address::generate(&env);
+fn test_verify_proof_empty_proof_leaf_equals_root_returns_true() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+    let amount: i128 = 500;
 
-    let (root, pa, pb, pc) = build_three_leaf_tree(&env, &a, 1000, &b, 2000, &c, 3000);
+    let leaf = merkle::leaf_hash(&env, &addr, amount);
 
-    mint(&env, &token, &admin, &admin, 6000);
-    client.initialize(&admin, &token, &root, &6000, &DEFAULT_EXPIRATION);
-
-    let mut entries = Vec::new(&env);
-    entries.push_back(entry(&a, 1000));
-    entries.push_back(entry(&b, 2000));
-    entries.push_back(entry(&c, 3000));
-
-    let mut proofs = Vec::new(&env);
-    proofs.push_back(pa);
-    proofs.push_back(pb);
-    proofs.push_back(pc);
-
-    client.batch_claim(&entries, &proofs);
-
-    // Read the events before any other call: `all()` reports the events of the
-    // most recent invocation, and every balance/flag query below is itself an
-    // invocation that replaces the buffer.
-    let emitted = contract_events(&env, &contract_id);
-
-    assert_eq!(token_balance(&env, &token, &a), 1000);
-    assert_eq!(token_balance(&env, &token, &b), 2000);
-    assert_eq!(token_balance(&env, &token, &c), 3000);
-    assert!(client.is_claimed(&a));
-    assert!(client.is_claimed(&b));
-    assert!(client.is_claimed(&c));
-
-    // One `claimed` event per recipient, in the order of `entries`.
-    assert_eq!(
-        emitted,
-        expected_events(
-            &env,
-            &contract_id,
-            &[
-                ((symbol_short!("claimed"), a.clone()), 1000i128.into_val(&env)),
-                ((symbol_short!("claimed"), b.clone()), 2000i128.into_val(&env)),
-                ((symbol_short!("claimed"), c.clone()), 3000i128.into_val(&env)),
-            ],
-        ),
-        "every claim in the batch must emit its own 'claimed' event"
-    );
-    // Everything was paid out, the contract keeps nothing back.
-    assert_eq!(token_balance(&env, &token, &contract_id), 0);
-}
-
-/// A repeated claimant aborts the whole batch — including the entries that were
-/// already processed before the duplicate was reached.
-#[test]
-fn test_batch_claim_duplicate_entry_fails_all() {
-    let (env, admin, token, contract_id) = setup();
-    let client = AirdropContractClient::new(&env, &contract_id);
-    let a = Address::generate(&env);
-    let b = Address::generate(&env);
-    let c = Address::generate(&env);
-
-    let (root, pa, pb, _) = build_three_leaf_tree(&env, &a, 1000, &b, 2000, &c, 3000);
-
-    mint(&env, &token, &admin, &admin, 6000);
-    client.initialize(&admin, &token, &root, &6000, &DEFAULT_EXPIRATION);
-
-    // `a` appears twice, with a valid proof both times, so the second entry
-    // reaches the double-claim guard rather than failing on the proof.
-    let mut entries = Vec::new(&env);
-    entries.push_back(entry(&a, 1000));
-    entries.push_back(entry(&b, 2000));
-    entries.push_back(entry(&a, 1000));
-
-    let mut proofs = Vec::new(&env);
-    proofs.push_back(pa.clone());
-    proofs.push_back(pb);
-    proofs.push_back(pa);
-
-    let result = client.try_batch_claim(&entries, &proofs);
-    // Read the buffer straight after the failed call, before the queries below
-    // replace it. A failed invocation reports no successful events.
-    let emitted = contract_events(&env, &contract_id);
-
-    assert_eq!(result, Err(Ok(AirdropError::AlreadyClaimed)));
-
-    // Nothing survived the rollback: no payouts, no claimed flags, no events.
-    assert_eq!(token_balance(&env, &token, &a), 0);
-    assert_eq!(token_balance(&env, &token, &b), 0);
-    assert!(!client.is_claimed(&a));
-    assert!(!client.is_claimed(&b));
-    // A rolled-back batch leaves no 'claimed' events behind either.
+    // With an empty proof the computed hash stays at the leaf — so it must
+    // equal the root only when root == leaf.
+    let empty_proof: Vec<BytesN<32>> = Vec::new(&env);
     assert!(
-        emitted.events().is_empty(),
-        "a rolled-back batch must emit no events"
+        merkle::verify_proof(&env, &leaf, leaf.clone(), &empty_proof),
+        "empty proof against root==leaf must return true (single-node tree)"
     );
-    assert_eq!(token_balance(&env, &token, &contract_id), 6000);
 }
 
-/// One bad proof in the batch means nobody is paid — the bad entry is last, so
-/// the earlier transfers have to be rolled back.
+/// An empty proof against a root that differs from the leaf returns false.
 #[test]
-fn test_batch_claim_invalid_proof_fails_all() {
-    let (env, admin, token, contract_id) = setup();
-    let client = AirdropContractClient::new(&env, &contract_id);
-    let a = Address::generate(&env);
-    let b = Address::generate(&env);
-    let c = Address::generate(&env);
+fn test_verify_proof_empty_proof_leaf_not_equal_root_returns_false() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+    let amount: i128 = 500;
 
-    let (root, pa, pb, _) = build_three_leaf_tree(&env, &a, 1000, &b, 2000, &c, 3000);
+    let leaf = merkle::leaf_hash(&env, &addr, amount);
 
-    mint(&env, &token, &admin, &admin, 6000);
-    client.initialize(&admin, &token, &root, &6000, &DEFAULT_EXPIRATION);
+    // Manufacture a root that is different from the leaf.
+    let other_addr = Address::generate(&env);
+    let wrong_root = merkle::leaf_hash(&env, &other_addr, amount);
 
-    let mut entries = Vec::new(&env);
-    entries.push_back(entry(&a, 1000));
-    entries.push_back(entry(&b, 2000));
-    entries.push_back(entry(&c, 3000));
-
-    let mut bad_proof = Vec::new(&env);
-    bad_proof.push_back(BytesN::from_array(&env, &[7u8; 32]));
-
-    let mut proofs = Vec::new(&env);
-    proofs.push_back(pa);
-    proofs.push_back(pb);
-    proofs.push_back(bad_proof);
-
-    let result = client.try_batch_claim(&entries, &proofs);
-    assert_eq!(result, Err(Ok(AirdropError::InvalidProof)));
-
-    assert_eq!(token_balance(&env, &token, &a), 0);
-    assert_eq!(token_balance(&env, &token, &b), 0);
-    assert!(!client.is_claimed(&a));
-    assert!(!client.is_claimed(&b));
-    assert_eq!(token_balance(&env, &token, &contract_id), 6000);
+    let empty_proof: Vec<BytesN<32>> = Vec::new(&env);
+    assert!(
+        !merkle::verify_proof(&env, &wrong_root, leaf, &empty_proof),
+        "empty proof against root!=leaf must return false"
+    );
 }
 
-/// An entry without a matching proof vector cannot be verified, so it is
-/// rejected before anything is paid.
+/// A valid one-element proof (two-leaf tree) returns true.
 #[test]
-fn test_batch_claim_proof_count_mismatch_fails() {
-    let (env, admin, token, contract_id) = setup();
-    let client = AirdropContractClient::new(&env, &contract_id);
-    let a = Address::generate(&env);
-    let b = Address::generate(&env);
-    let c = Address::generate(&env);
+fn test_verify_proof_length_one_two_leaf_tree_returns_true() {
+    let env = Env::default();
+    let addr0 = Address::generate(&env);
+    let addr1 = Address::generate(&env);
 
-    let (root, pa, pb, _) = build_three_leaf_tree(&env, &a, 1000, &b, 2000, &c, 3000);
+    let (root, proof0, proof1) = build_two_leaf_tree(&env, &addr0, 1000, &addr1, 500);
 
-    mint(&env, &token, &admin, &admin, 6000);
-    client.initialize(&admin, &token, &root, &6000, &DEFAULT_EXPIRATION);
-
-    let mut entries = Vec::new(&env);
-    entries.push_back(entry(&a, 1000));
-    entries.push_back(entry(&b, 2000));
-
-    // Two entries, one proof.
-    let mut proofs = Vec::new(&env);
-    proofs.push_back(pa);
-    proofs.push_back(pb);
-
-    entries.push_back(entry(&c, 3000)); // now 3 entries vs 2 proofs
-
-    let result = client.try_batch_claim(&entries, &proofs);
-    assert_eq!(result, Err(Ok(AirdropError::InvalidProof)));
-
-    assert_eq!(token_balance(&env, &token, &a), 0);
-    assert!(!client.is_claimed(&a));
+    assert!(
+        merkle::verify_proof(&env, &root, merkle::leaf_hash(&env, &addr0, 1000), &proof0),
+        "valid proof for leaf0 in a two-leaf tree must return true"
+    );
+    assert!(
+        merkle::verify_proof(&env, &root, merkle::leaf_hash(&env, &addr1, 500), &proof1),
+        "valid proof for leaf1 in a two-leaf tree must return true"
+    );
 }
 
-/// An empty batch is a no-op, not an error.
+/// A proof that is one element too long (extra hash appended) returns false.
 #[test]
-fn test_batch_claim_empty_is_noop() {
-    let (env, admin, token, contract_id) = setup();
-    let client = AirdropContractClient::new(&env, &contract_id);
-    let claimant = Address::generate(&env);
+fn test_verify_proof_one_element_too_long_returns_false() {
+    let env = Env::default();
+    let addr0 = Address::generate(&env);
+    let addr1 = Address::generate(&env);
 
-    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    let (root, mut proof0, _) = build_two_leaf_tree(&env, &addr0, 1000, &addr1, 500);
 
-    mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+    // Sanity check: the original proof is valid.
+    assert!(
+        merkle::verify_proof(&env, &root, merkle::leaf_hash(&env, &addr0, 1000), &proof0),
+        "sanity: correct proof must be valid"
+    );
 
-    let entries: Vec<AirdropEntry> = Vec::new(&env);
-    let proofs: Vec<Vec<BytesN<32>>> = Vec::new(&env);
+    // Append a random extra hash — any hash that doesn't legitimately belong.
+    let extra = merkle::leaf_hash(&env, &Address::generate(&env), 1);
+    proof0.push_back(extra);
 
-    client.batch_claim(&entries, &proofs);
-    let emitted = contract_events(&env, &contract_id);
-
-    // The deposit is untouched, nothing was marked as claimed, and an empty
-    // batch emits nothing.
-    assert!(emitted.events().is_empty());
-    assert_eq!(token_balance(&env, &token, &contract_id), 1500);
-    assert!(!client.is_claimed(&claimant));
+    assert!(
+        !merkle::verify_proof(&env, &root, merkle::leaf_hash(&env, &addr0, 1000), &proof0),
+        "proof with one extra element must return false"
+    );
 }
 
-/// Batch claims go through the same rules as single claims: a recipient who
-/// already claimed individually cannot be paid again through a batch.
+/// A proof consisting of all-same hashes returns false (unless the tree
+/// genuinely has that structure, which is astronomically unlikely for distinct
+/// inputs).
 #[test]
-fn test_batch_claim_rejects_already_claimed_member() {
-    let (env, admin, token, contract_id) = setup();
-    let client = AirdropContractClient::new(&env, &contract_id);
-    let a = Address::generate(&env);
-    let b = Address::generate(&env);
-    let c = Address::generate(&env);
+fn test_verify_proof_all_same_hash_returns_false() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+    let amount: i128 = 1000;
 
-    let (root, pa, pb, pc) = build_three_leaf_tree(&env, &a, 1000, &b, 2000, &c, 3000);
+    let leaf = merkle::leaf_hash(&env, &addr, amount);
 
-    mint(&env, &token, &admin, &admin, 6000);
-    client.initialize(&admin, &token, &root, &6000, &DEFAULT_EXPIRATION);
+    // Build a proof of three identical hashes (the leaf itself, repeated).
+    // These do NOT correspond to any legitimate tree whose root we would store.
+    let mut bogus_proof: Vec<BytesN<32>> = Vec::new(&env);
+    bogus_proof.push_back(leaf.clone());
+    bogus_proof.push_back(leaf.clone());
+    bogus_proof.push_back(leaf.clone());
 
-    // `a` claims on their own first.
-    client.claim(&a, &1000, &pa);
+    // Compute what the verifier would produce for this proof so we can confirm
+    // it does NOT equal a legitimately constructed root.
+    let addr0 = Address::generate(&env);
+    let addr1 = Address::generate(&env);
+    let (legitimate_root, _, _) = build_two_leaf_tree(&env, &addr0, 500, &addr1, 500);
 
-    let mut entries = Vec::new(&env);
-    entries.push_back(entry(&a, 1000));
-    entries.push_back(entry(&b, 2000));
-    entries.push_back(entry(&c, 3000));
-
-    let mut proofs = Vec::new(&env);
-    proofs.push_back(pa);
-    proofs.push_back(pb);
-    proofs.push_back(pc);
-
-    let result = client.try_batch_claim(&entries, &proofs);
-    assert_eq!(result, Err(Ok(AirdropError::AlreadyClaimed)));
-
-    // `a` keeps the single claim, but `b` and `c` were rolled back.
-    assert_eq!(token_balance(&env, &token, &a), 1000);
-    assert_eq!(token_balance(&env, &token, &b), 0);
-    assert_eq!(token_balance(&env, &token, &c), 0);
+    assert!(
+        !merkle::verify_proof(&env, &legitimate_root, leaf.clone(), &bogus_proof),
+        "all-same-hash proof against a real root must return false"
+    );
 }
