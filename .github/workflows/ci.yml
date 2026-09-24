@@ -22,6 +22,14 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      # `cargo audit` resolves the dependency graph itself, which matters here
+      # because Cargo.lock is gitignored. Unmaintained advisories are reported
+      # as warnings and do not fail the job — the only one today comes from
+      # soroban-sdk's own crypto stack (`paste` via ark-ff), so failing on it
+      # would block every PR. Vulnerabilities fail the job.
+      - uses: taiki-e/install-action@cargo-audit
+      - name: Audit dependencies against the RustSec advisory database
+        run: cargo audit
       - name: Run tests
         run: cargo test --manifest-path contracts/airdrop/Cargo.toml
       - name: Build WASM
