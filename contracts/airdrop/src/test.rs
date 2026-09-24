@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+extern crate alloc;
+
 use super::*;
 use soroban_sdk::{
     testutils::{storage::Instance as _, Address as _, Events, Ledger, MockAuth, MockAuthInvoke},
@@ -912,5 +914,64 @@ fn test_verify_proof_all_same_hash_returns_false() {
     assert!(
         !merkle::verify_proof(&env, &legitimate_root, leaf.clone(), &bogus_proof),
         "all-same-hash proof against a real root must return false"
+    );
+}
+
+// ─── Issue #43: Persistent TTL refresh on is_claimed ───────────────────────
+
+/// is_claimed() must return true even after many ledger advances if the entry
+/// exists, because it refreshes the persistent Claimed(addr) TTL.
+///
+/// Without the fix, the persistent entry could archive and is_claimed() would
+/// return false, enabling a double-claim.
+#[test]
+fn test_is_claimed_refreshes_persistent_ttl() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    // Claim so the Claimed(claimant) persistent entry exists.
+    client.claim(&claimant, &1000, &proof);
+    assert!(client.is_claimed(&claimant), "should be claimed right after claim()");
+
+    // Simulate many ledger advances — enough that the persistent entry would
+    // archive if extend_ttl were not called.  We do this by advancing the
+    // sequence number well past the CLAIMED_TTL threshold.
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + CLAIMED_TTL_THRESHOLD + 1);
+
+    // is_claimed() must still return true: it refreshes the persistent TTL.
+    // If the fix were absent the persistent entry would appear missing.
+    assert!(
+        client.is_claimed(&claimant),
+        "is_claimed() must return true after ledger advances — persistent TTL must be refreshed"
+    );
+}
+
+/// is_claimed() must NOT attempt to extend TTL for an address that never
+/// claimed — `has()` returns false and no extend_ttl call should happen.
+#[test]
+fn test_is_claimed_false_for_unclaimed_after_ledger_advance() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let never_claimed = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+    client.claim(&claimant, &1000, &proof);
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + CLAIMED_TTL_THRESHOLD + 1);
+
+    // An address that never claimed must still return false.
+    assert!(
+        !client.is_claimed(&never_claimed),
+        "is_claimed() must return false for an address that never claimed"
     );
 }

@@ -339,11 +339,28 @@ impl AirdropContract {
     ///
     /// Refreshes instance storage TTL so dormant airdrops with no new claims
     /// do not have their on-chain data archived.
+    ///
+    /// Issue #43: also refreshes the *persistent* `Claimed(addr)` entry TTL
+    /// if the entry exists. Without this refresh, an archived `Claimed` entry
+    /// causes `is_claimed()` to return `false`, which would allow a
+    /// double-claim after the entry is archived.
     pub fn is_claimed(env: Env, claimant: Address) -> bool {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
-        env.storage().persistent().has(&DataKey::Claimed(claimant))
+
+        let key = DataKey::Claimed(claimant);
+        let exists = env.storage().persistent().has(&key);
+
+        // Refresh the persistent Claimed entry TTL so it cannot archive while
+        // the airdrop is live, which would silently allow a double-claim.
+        if exists {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, CLAIMED_TTL_THRESHOLD, CLAIMED_TTL);
+        }
+
+        exists
     }
 
     /// Return whether the airdrop is currently active.
