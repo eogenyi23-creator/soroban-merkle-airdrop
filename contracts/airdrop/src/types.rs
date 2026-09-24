@@ -1,7 +1,6 @@
 //! Data types and storage keys for the Merkle airdrop contract.
 
-use soroban_sdk::{contracttype, contracterror, Address};
-
+use soroban_sdk::{contracterror, contracttype, Address};
 
 /// Persistent storage keys.
 #[contracttype]
