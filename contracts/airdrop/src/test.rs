@@ -648,3 +648,118 @@ fn test_restore_requires_no_auth() {
     // restore() must succeed without any signed auth.
     client.restore(); // panics if auth is required
 }
+
+// ─── Issue #64: verify_proof edge case unit tests ────────────────────────────
+
+/// An empty proof against a root that equals the leaf returns true.
+/// This is the single-node-tree case: the leaf IS the root.
+#[test]
+fn test_verify_proof_empty_proof_leaf_equals_root_returns_true() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+    let amount: i128 = 500;
+
+    let leaf = merkle::leaf_hash(&env, &addr, amount);
+
+    // With an empty proof the computed hash stays at the leaf — so it must
+    // equal the root only when root == leaf.
+    let empty_proof: Vec<BytesN<32>> = Vec::new(&env);
+    assert!(
+        merkle::verify_proof(&env, &leaf, leaf.clone(), &empty_proof),
+        "empty proof against root==leaf must return true (single-node tree)"
+    );
+}
+
+/// An empty proof against a root that differs from the leaf returns false.
+#[test]
+fn test_verify_proof_empty_proof_leaf_not_equal_root_returns_false() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+    let amount: i128 = 500;
+
+    let leaf = merkle::leaf_hash(&env, &addr, amount);
+
+    // Manufacture a root that is different from the leaf.
+    let other_addr = Address::generate(&env);
+    let wrong_root = merkle::leaf_hash(&env, &other_addr, amount);
+
+    let empty_proof: Vec<BytesN<32>> = Vec::new(&env);
+    assert!(
+        !merkle::verify_proof(&env, &wrong_root, leaf, &empty_proof),
+        "empty proof against root!=leaf must return false"
+    );
+}
+
+/// A valid one-element proof (two-leaf tree) returns true.
+#[test]
+fn test_verify_proof_length_one_two_leaf_tree_returns_true() {
+    let env = Env::default();
+    let addr0 = Address::generate(&env);
+    let addr1 = Address::generate(&env);
+
+    let (root, proof0, proof1) = build_two_leaf_tree(&env, &addr0, 1000, &addr1, 500);
+
+    assert!(
+        merkle::verify_proof(&env, &root, merkle::leaf_hash(&env, &addr0, 1000), &proof0),
+        "valid proof for leaf0 in a two-leaf tree must return true"
+    );
+    assert!(
+        merkle::verify_proof(&env, &root, merkle::leaf_hash(&env, &addr1, 500), &proof1),
+        "valid proof for leaf1 in a two-leaf tree must return true"
+    );
+}
+
+/// A proof that is one element too long (extra hash appended) returns false.
+#[test]
+fn test_verify_proof_one_element_too_long_returns_false() {
+    let env = Env::default();
+    let addr0 = Address::generate(&env);
+    let addr1 = Address::generate(&env);
+
+    let (root, mut proof0, _) = build_two_leaf_tree(&env, &addr0, 1000, &addr1, 500);
+
+    // Sanity check: the original proof is valid.
+    assert!(
+        merkle::verify_proof(&env, &root, merkle::leaf_hash(&env, &addr0, 1000), &proof0),
+        "sanity: correct proof must be valid"
+    );
+
+    // Append a random extra hash — any hash that doesn't legitimately belong.
+    let extra = merkle::leaf_hash(&env, &Address::generate(&env), 1);
+    proof0.push_back(extra);
+
+    assert!(
+        !merkle::verify_proof(&env, &root, merkle::leaf_hash(&env, &addr0, 1000), &proof0),
+        "proof with one extra element must return false"
+    );
+}
+
+/// A proof consisting of all-same hashes returns false (unless the tree
+/// genuinely has that structure, which is astronomically unlikely for distinct
+/// inputs).
+#[test]
+fn test_verify_proof_all_same_hash_returns_false() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+    let amount: i128 = 1000;
+
+    let leaf = merkle::leaf_hash(&env, &addr, amount);
+
+    // Build a proof of three identical hashes (the leaf itself, repeated).
+    // These do NOT correspond to any legitimate tree whose root we would store.
+    let mut bogus_proof: Vec<BytesN<32>> = Vec::new(&env);
+    bogus_proof.push_back(leaf.clone());
+    bogus_proof.push_back(leaf.clone());
+    bogus_proof.push_back(leaf.clone());
+
+    // Compute what the verifier would produce for this proof so we can confirm
+    // it does NOT equal a legitimately constructed root.
+    let addr0 = Address::generate(&env);
+    let addr1 = Address::generate(&env);
+    let (legitimate_root, _, _) = build_two_leaf_tree(&env, &addr0, 500, &addr1, 500);
+
+    assert!(
+        !merkle::verify_proof(&env, &legitimate_root, leaf.clone(), &bogus_proof),
+        "all-same-hash proof against a real root must return false"
+    );
+}
