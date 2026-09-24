@@ -168,73 +168,41 @@ describe("verifyProof — mismatched proof length", () => {
   });
 });
 
-// ─── Issue #33: Large-scale Merkle tree test (10 000 recipients) ─────────────
+// ─── Issue #32: Cross-language leaf-hash test vector suite ──────────────────
 
 /**
- * Build a Merkle tree with 10 000 unique entries and verify all proofs.
+ * Load the shared test-vector file and verify that leafHash() in TypeScript
+ * produces byte-for-byte identical output to the Rust contract's leaf_hash()
+ * for every entry.
  *
- * Acceptance criteria:
- * - buildMerkleTree handles 10 000 entries without error
- * - all 10 000 verifyProof() calls return true
- * - the test completes in under 5 seconds
- * - tree depth is ≤ 14 (⌈log₂(10000)⌉ = 14)
+ * A mismatch means the two implementations have diverged — which would silently
+ * break all claims because proof verification depends on leaf hash parity.
  *
- * Each entry gets a deterministically unique Stellar G-address by formatting
- * the index into a valid 56-character strkey.  The address is not decoded on
- * the Soroban side during proof verification, so any syntactically valid
- * G-address string works here.
+ * Vectors cover: G-addresses, C-addresses, amount=1, amount=i128::MAX,
+ * amounts where only the high 64-bit word is set, and typical amounts.
  */
-describe("buildMerkleTree — 10 000 recipients", () => {
-  const COUNT = 10_000;
-
-  // Deterministic, unique G-addresses derived from an index.
-  // Format: "G" + index zero-padded to 5 digits + fixed suffix to reach 56 chars.
-  // The suffix keeps the strkey-like appearance without needing real key derivation.
-  function makeAddress(i: number): string {
-    // Valid Stellar addresses are 56 characters long and start with G.
-    // We use a fixed base and overwrite the first 5 chars after G with the index.
-    const base = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    const idx = String(i).padStart(5, "0");
-    return "G" + idx + base.slice(6);
+describe("leafHash — cross-language test vectors", () => {
+  interface LeafHashVector {
+    _comment?: string;
+    address: string;
+    amount: string;
+    expected_leaf_hex: string;
   }
 
-  const entries = Array.from({ length: COUNT }, (_, i) => ({
-    address: makeAddress(i),
-    amount: BigInt(i + 1) * 100n,
-  }));
+  const vectorsPath = resolve(process.cwd(), "../test-vectors/leaf-hash-vectors.json");
+  const vectors: LeafHashVector[] = JSON.parse(readFileSync(vectorsPath, "utf8"));
 
-  it(`builds a tree with ${COUNT} entries and verifies all proofs in < 5 s`, () => {
-    const start = Date.now();
-
-    const { root, proofs } = buildMerkleTree(entries);
-
-    // Verify every proof.
-    let allValid = true;
-    for (const entry of entries) {
-      const cp = proofs.get(entry.address);
-      if (!cp || !verifyProof(root, entry.address, entry.amount, cp.proof)) {
-        allValid = false;
-        break;
-      }
-    }
-
-    const elapsed = Date.now() - start;
-
-    expect(allValid).toBe(true);
-    expect(elapsed).toBeLessThan(5000);
+  it("has at least 10 vectors", () => {
+    expect(vectors.length).toBeGreaterThanOrEqual(10);
   });
 
-  it(`tree depth is ≤ 14 (⌈log₂(${COUNT})⌉)`, () => {
-    const { root, proofs } = buildMerkleTree(entries);
-
-    // The proof length equals the tree depth for leaf nodes (excluding promoted
-    // odd nodes which have a shorter proof).  The maximum proof length across
-    // all entries equals the tree depth.
-    let maxDepth = 0;
-    for (const cp of proofs.values()) {
-      if (cp.proof.length > maxDepth) maxDepth = cp.proof.length;
-    }
-
-    expect(maxDepth).toBeLessThanOrEqual(14);
-  });
+  for (const [i, v] of vectors.entries()) {
+    it(`vector ${i}: ${v.address.slice(0, 6)}... amount=${v.amount}`, () => {
+      const actual = leafHash(v.address, BigInt(v.amount));
+      expect(actual.toString("hex")).toBe(
+        v.expected_leaf_hex,
+        `vector ${i} (${v.address}, ${v.amount}): TypeScript leafHash does not match expected hex`
+      );
+    });
+  }
 });

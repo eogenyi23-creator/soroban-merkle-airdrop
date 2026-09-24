@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+extern crate alloc;
+
 use super::*;
 use soroban_sdk::{
     testutils::{storage::Instance as _, Address as _, Events, Ledger, MockAuth, MockAuthInvoke},
@@ -599,6 +601,111 @@ fn test_non_admin_reclaim_fails() {
 
     // This should panic because the stored admin's auth is not satisfied.
     client.reclaim();
+}
+
+// ─── Issue #32: Cross-language leaf-hash test vector suite ─────────────────
+
+/// Loop over every entry in `test-vectors/leaf-hash-vectors.json` and assert
+/// that `merkle::leaf_hash` in Rust produces the expected hex output.
+///
+/// The expected values in the JSON file were produced by running the compiled
+/// TypeScript SDK (`sdk/src/merkle.ts`) with the same inputs, so a mismatch
+/// here means the two implementations have diverged.
+///
+/// Vectors cover: G-addresses, C-addresses, amount=1, amount=i128::MAX,
+/// amounts where only the high 64-bit word is set, and typical amounts.
+#[test]
+fn test_leaf_hash_vectors() {
+    let env = Env::default();
+
+    // The JSON file is embedded at compile time so the test is self-contained
+    // and runs without filesystem access from the Soroban test harness.
+    let json_bytes = include_bytes!("../../../test-vectors/leaf-hash-vectors.json");
+    let json_str = core::str::from_utf8(json_bytes).expect("leaf-hash-vectors.json is not valid UTF-8");
+
+    // Minimal JSON array parser — no external crate required.
+    // Each element has the shape:
+    //   { "_comment": "...", "address": "G...", "amount": "123", "expected_leaf_hex": "abc..." }
+    // We extract address, amount (as string→i128), and expected_leaf_hex.
+    for (i, chunk) in json_str
+        .split('{')
+        .skip(1) // skip the opening of the outer array
+        .enumerate()
+    {
+        // Skip entries that don't look like data objects.
+        if !chunk.contains("\"address\"") {
+            continue;
+        }
+
+        let address = extract_json_str(chunk, "address")
+            .unwrap_or_else(|| panic!("vector {i}: missing 'address' field"));
+        let amount_str = extract_json_str(chunk, "amount")
+            .unwrap_or_else(|| panic!("vector {i}: missing 'amount' field"));
+        let expected_hex = extract_json_str(chunk, "expected_leaf_hex")
+            .unwrap_or_else(|| panic!("vector {i}: missing 'expected_leaf_hex' field"));
+
+        let amount: i128 = amount_str
+            .parse()
+            .unwrap_or_else(|_| panic!("vector {i}: cannot parse amount '{amount_str}'"));
+
+        let addr = Address::from_str(&env, address);
+        let actual = merkle::leaf_hash(&env, &addr, amount);
+
+        let expected_bytes = hex_decode(expected_hex)
+            .unwrap_or_else(|| panic!("vector {i}: invalid hex in expected_leaf_hex"));
+        let expected: BytesN<32> = BytesN::from_array(
+            &env,
+            expected_bytes
+                .as_slice()
+                .try_into()
+                .unwrap_or_else(|_| panic!("vector {i}: expected_leaf_hex must be 32 bytes")),
+        );
+
+        assert_eq!(
+            actual, expected,
+            "vector {i} ({address}, {amount_str}): Rust leaf_hash does not match TypeScript SDK output"
+        );
+    }
+}
+
+/// Extract the string value for a JSON key from a raw chunk of JSON text.
+/// Handles the form `"key": "value"` (double-quoted string values only).
+fn extract_json_str<'a>(chunk: &'a str, key: &str) -> Option<&'a str> {
+    let needle = alloc::format!("\"{}\":", key);
+    let start = chunk.find(needle.as_str())?;
+    let rest = &chunk[start + needle.len()..];
+    // Skip whitespace.
+    let rest = rest.trim_start_matches([' ', '\t', '\n', '\r']);
+    if !rest.starts_with('"') {
+        return None;
+    }
+    let inner = &rest[1..]; // skip opening quote
+    let end = inner.find('"')?;
+    Some(&inner[..end])
+}
+
+/// Decode a lowercase hex string into bytes. Returns None on invalid input.
+fn hex_decode(hex: &str) -> Option<alloc::vec::Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = alloc::vec::Vec::with_capacity(hex.len() / 2);
+    let bytes = hex.as_bytes();
+    for chunk in bytes.chunks(2) {
+        let hi = hex_nibble(chunk[0])?;
+        let lo = hex_nibble(chunk[1])?;
+        out.push((hi << 4) | lo);
+    }
+    Some(out)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 // ─── Issue 6: Cross-language leaf-hash test vector ─────────────────────────
