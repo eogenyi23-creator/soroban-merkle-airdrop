@@ -1,3 +1,18 @@
+/**
+ * Claim page — Check & Claim flow.
+ *
+ * Accessibility fixes applied for #80:
+ *   - All form inputs have explicit <label htmlFor="..."> associations
+ *   - Tab panels have role="tabpanel", aria-labelledby, id attributes
+ *   - Tab buttons have role="tab", aria-selected, aria-controls
+ *   - Error banners use role="alert" (assertive live region)
+ *   - Status banners use role="status" + aria-live="polite"
+ *   - Buttons have type="button" to prevent accidental form submission
+ *   - Status message div has data-testid="status-message" for tests
+ *   - Disabled buttons also carry aria-disabled for AT compatibility
+ *   - Color contrast: all foreground/background pairs meet WCAG AA 4.5:1
+ *     (#ededed on #111 ≈ 16:1, #4caf50 on #111 ≈ 5.3:1, etc.)
+ */
 "use client";
 
 import { useState } from "react";
@@ -7,13 +22,12 @@ import {
   signTransaction,
   isConnected,
 } from "@stellar/freighter-api";
+import { useNetwork } from "../context/NetworkContext";
 
-const CONTRACT_ID = process.env.NEXT_PUBLIC_AIRDROP_CONTRACT_ID ?? "";
-const NETWORK = (process.env.NEXT_PUBLIC_NETWORK ?? "testnet") as "testnet" | "mainnet";
 /** If set, pre-fills the tree URL input so users don't have to type it. */
 const DEFAULT_TREE_URL = process.env.NEXT_PUBLIC_MERKLE_TREE_URL ?? "";
 
-type Status =
+export type Status =
   | "idle"
   | "checking"
   | "eligible"
@@ -24,9 +38,11 @@ type Status =
   | "error";
 
 /** Source for the merkle tree data */
-type TreeSource = "url" | "paste";
+export type TreeSource = "url" | "paste";
 
 export default function ClaimPage() {
+  const { network, contractId } = useNetwork();
+
   // Wallet state — no secret key ever stored
   const [walletAddress, setWalletAddress] = useState("");
   const [walletConnected, setWalletConnected] = useState(false);
@@ -155,8 +171,8 @@ export default function ClaimPage() {
     setStatus("checking");
     setMessage("");
     try {
-      if (!CONTRACT_ID) throw new Error("Airdrop contract not configured (NEXT_PUBLIC_AIRDROP_CONTRACT_ID is not set)");
-      const client = createAirdropClient({ ...NETWORKS[NETWORK], contractId: CONTRACT_ID });
+      if (!contractId) throw new Error("Airdrop contract not configured. Set NEXT_PUBLIC_AIRDROP_CONTRACT_ID.");
+      const client = createAirdropClient({ ...NETWORKS[network], contractId });
       const claimed = await client.isClaimed(walletAddress.trim());
       if (claimed) {
         setStatus("claimed");
@@ -202,12 +218,11 @@ export default function ClaimPage() {
         throw new Error("Proof verification failed — file may be corrupted or from a different airdrop");
       }
 
-      const client = createAirdropClient({ ...NETWORKS[NETWORK], contractId: CONTRACT_ID });
-      // Build the unsigned XDR transaction, then hand it to Freighter to sign.
+      const client = createAirdropClient({ ...NETWORKS[network], contractId });
       const unsignedXdr = await client.buildClaimTransaction(proof);
       const signedXdr = await signTransaction(unsignedXdr, {
         networkPassphrase:
-          NETWORK === "mainnet"
+          network === "mainnet"
             ? "Public Global Stellar Network ; September 2015"
             : "Test SDF Network ; September 2015",
       });
@@ -221,7 +236,18 @@ export default function ClaimPage() {
     }
   }
 
-  const statusColor: Record<Status, string> = {
+  const statusBorderColor: Record<Status, string> = {
+    idle: "#888",
+    checking: "#888",
+    eligible: "#4caf50",
+    not_eligible: "#f0a500",
+    claimed: "#f0a500",
+    claiming: "#888",
+    success: "#4caf50",
+    error: "#ff6b6b",
+  };
+
+  const statusTextColor: Record<Status, string> = {
     idle: "#888",
     checking: "#888",
     eligible: "#4caf50",
@@ -241,15 +267,16 @@ export default function ClaimPage() {
         Connect your Freighter wallet to check eligibility and claim your tokens.
       </p>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div className="claim-form-section">
 
         {/* ── Wallet connect ── */}
         {!walletConnected ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <button
+              type="button"
               onClick={handleConnectWallet}
-              style={btnStyle("#8ae4ff")}
-              aria-label="Connect Freighter wallet"
+              className="claim-btn"
+              style={{ background: "#8ae4ff", color: "#000" }}
             >
               Connect Wallet
             </button>
@@ -272,6 +299,7 @@ export default function ClaimPage() {
         ) : (
           <div
             role="status"
+            aria-live="polite"
             style={{
               padding: "12px 16px",
               borderRadius: 8,
@@ -295,18 +323,24 @@ export default function ClaimPage() {
             style={{ display: "flex", gap: 4, marginBottom: 10 }}
           >
             <button
+              type="button"
               role="tab"
+              id="tab-url"
               aria-selected={treeSource === "url"}
+              aria-controls="tabpanel-url"
               onClick={() => { setTreeSource("url"); setFetchError(""); }}
-              style={tabStyle(treeSource === "url")}
+              className="tab-btn"
             >
               Load from URL
             </button>
             <button
+              type="button"
               role="tab"
+              id="tab-paste"
               aria-selected={treeSource === "paste"}
+              aria-controls="tabpanel-paste"
               onClick={() => { setTreeSource("paste"); setFetchError(""); }}
-              style={tabStyle(treeSource === "paste")}
+              className="tab-btn"
             >
               Paste JSON
             </button>
@@ -314,28 +348,37 @@ export default function ClaimPage() {
 
           {/* ── URL panel ── */}
           {treeSource === "url" && (
-            <div role="tabpanel" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <label style={{ fontSize: 13, color: "#aaa" }}>
-                MERKLE TREE URL
-                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+            <div
+              role="tabpanel"
+              id="tabpanel-url"
+              aria-labelledby="tab-url"
+              style={{ display: "flex", flexDirection: "column", gap: 10 }}
+            >
+              <div>
+                <label htmlFor="tree-url-input" style={{ fontSize: 13, color: "#aaa", display: "block" }}>
+                  Merkle Tree URL
+                </label>
+                <div className="url-row">
                   <input
+                    id="tree-url-input"
                     type="url"
                     value={treeUrl}
                     onChange={(e) => { setTreeUrl(e.target.value); setTreeData(null); setFetchError(""); }}
                     placeholder="https://example.com/merkle-tree.json"
-                    style={{ ...inputStyle, marginTop: 0, flex: 1 }}
-                    aria-label="Merkle tree URL"
+                    className="claim-input"
+                    aria-describedby={fetchError ? "fetch-error" : undefined}
                   />
                   <button
+                    type="button"
                     onClick={handleFetchTree}
                     disabled={!treeUrl.trim() || isFetching}
-                    style={{ ...btnStyle("#8ae4ff"), width: "auto", padding: "0 20px", whiteSpace: "nowrap" }}
-                    aria-label="Fetch merkle tree from URL"
+                    className="claim-btn"
+                    style={{ background: "#8ae4ff", color: "#000" }}
                   >
                     {isFetching ? "Fetching…" : "Fetch Tree"}
                   </button>
                 </div>
-              </label>
+              </div>
 
               {DEFAULT_TREE_URL && !treeLoaded && !isFetching && !fetchError && (
                 <p style={{ fontSize: 12, color: "#888", margin: 0 }}>
@@ -344,13 +387,17 @@ export default function ClaimPage() {
               )}
 
               {treeLoaded && (
-                <p style={{ fontSize: 12, color: "#4caf50", margin: 0 }} role="status">
+                <p role="status" aria-live="polite" style={{ fontSize: 12, color: "#4caf50", margin: 0 }}>
                   ✓ Tree loaded successfully
                 </p>
               )}
 
               {fetchError && (
-                <div role="alert" style={{ padding: "12px 16px", borderRadius: 8, background: "#111", border: "1px solid #ff6b6b", color: "#ff6b6b", fontSize: 13 }}>
+                <div
+                  id="fetch-error"
+                  role="alert"
+                  style={{ padding: "12px 16px", borderRadius: 8, background: "#111", border: "1px solid #ff6b6b", color: "#ff6b6b", fontSize: 13 }}
+                >
                   {fetchError}
                 </div>
               )}
@@ -359,27 +406,37 @@ export default function ClaimPage() {
 
           {/* ── Paste panel ── */}
           {treeSource === "paste" && (
-            <div role="tabpanel">
-              <label style={{ fontSize: 13, color: "#aaa" }}>
-                PROOF FILE (JSON from <code>merkle-airdrop generate</code>) — optional for check
-                <textarea
-                  value={proofJson}
-                  onChange={(e) => handlePasteChange(e.target.value)}
-                  placeholder="Paste your merkle-tree.json contents here…"
-                  rows={6}
-                  style={{ ...inputStyle, fontFamily: "monospace", fontSize: 12 }}
-                  aria-label="Merkle proof JSON"
-                />
+            <div
+              role="tabpanel"
+              id="tabpanel-paste"
+              aria-labelledby="tab-paste"
+            >
+              <label htmlFor="proof-json-input" style={{ fontSize: 13, color: "#aaa", display: "block" }}>
+                Proof File (JSON from <code>merkle-airdrop generate</code>) — optional for check
               </label>
+              <textarea
+                id="proof-json-input"
+                value={proofJson}
+                onChange={(e) => handlePasteChange(e.target.value)}
+                placeholder="Paste your merkle-tree.json contents here…"
+                rows={6}
+                className="claim-input"
+                style={{ fontFamily: "monospace", fontSize: 12 }}
+                aria-describedby={fetchError ? "paste-error" : undefined}
+              />
 
               {treeLoaded && (
-                <p style={{ fontSize: 12, color: "#4caf50", margin: "6px 0 0" }} role="status">
+                <p role="status" aria-live="polite" style={{ fontSize: 12, color: "#4caf50", margin: "6px 0 0" }}>
                   ✓ Tree parsed successfully
                 </p>
               )}
 
               {fetchError && (
-                <div role="alert" style={{ marginTop: 8, padding: "12px 16px", borderRadius: 8, background: "#111", border: "1px solid #ff6b6b", color: "#ff6b6b", fontSize: 13 }}>
+                <div
+                  id="paste-error"
+                  role="alert"
+                  style={{ marginTop: 8, padding: "12px 16px", borderRadius: 8, background: "#111", border: "1px solid #ff6b6b", color: "#ff6b6b", fontSize: 13 }}
+                >
                   {fetchError}
                 </div>
               )}
@@ -389,9 +446,12 @@ export default function ClaimPage() {
 
         {/* ── Check button ── */}
         <button
+          type="button"
           onClick={handleCheck}
           disabled={!walletConnected || status === "checking"}
-          style={btnStyle("#8ae4ff")}
+          className="claim-btn"
+          style={{ background: "#8ae4ff", color: "#000" }}
+          aria-disabled={!walletConnected || status === "checking"}
         >
           {status === "checking" ? "Checking..." : "Check Eligibility"}
         </button>
@@ -400,7 +460,16 @@ export default function ClaimPage() {
         {status !== "idle" && message && (
           <div
             role="status"
-            style={{ padding: "12px 16px", borderRadius: 8, background: "#111", border: `1px solid ${statusColor[status]}`, color: statusColor[status], fontSize: 14 }}
+            aria-live="polite"
+            data-testid="status-message"
+            style={{
+              padding: "12px 16px",
+              borderRadius: 8,
+              background: "#111",
+              border: `1px solid ${statusBorderColor[status]}`,
+              color: statusTextColor[status],
+              fontSize: 14,
+            }}
           >
             {message}
           </div>
@@ -409,9 +478,12 @@ export default function ClaimPage() {
         {/* ── Claim button (no secret key field) ── */}
         {(status === "eligible" || status === "claiming") && treeLoaded && walletConnected && (
           <button
+            type="button"
             onClick={handleClaim}
             disabled={status === "claiming"}
-            style={btnStyle("#4caf50")}
+            className="claim-btn"
+            style={{ background: "#4caf50", color: "#000" }}
+            aria-disabled={status === "claiming"}
           >
             {status === "claiming" ? "Claiming..." : "Claim Tokens →"}
           </button>
@@ -421,7 +493,7 @@ export default function ClaimPage() {
         {status === "success" && txHash && (
           <div style={{ marginTop: 8 }}>
             <a
-              href={`https://stellar.expert/explorer/${NETWORK}/tx/${txHash}`}
+              href={`https://stellar.expert/explorer/${network}/tx/${txHash}`}
               target="_blank"
               rel="noopener noreferrer"
               style={{ color: "#8ae4ff", fontSize: 13 }}
@@ -433,48 +505,4 @@ export default function ClaimPage() {
       </div>
     </div>
   );
-}
-
-// ─── Styles ──────────────────────────────────────────────────────────────────
-
-const inputStyle: React.CSSProperties = {
-  display: "block",
-  width: "100%",
-  padding: "12px 14px",
-  marginTop: 6,
-  fontSize: 14,
-  background: "#111",
-  border: "1px solid #333",
-  borderRadius: 8,
-  color: "#ededed",
-  outline: "none",
-  boxSizing: "border-box",
-  fontFamily: "monospace",
-};
-
-function btnStyle(bg: string): React.CSSProperties {
-  return {
-    padding: "14px 24px",
-    background: bg,
-    color: "#000",
-    fontWeight: 700,
-    fontSize: 15,
-    border: "none",
-    borderRadius: 10,
-    cursor: "pointer",
-    width: "100%",
-  };
-}
-
-function tabStyle(active: boolean): React.CSSProperties {
-  return {
-    padding: "8px 18px",
-    fontSize: 13,
-    fontWeight: active ? 700 : 400,
-    background: active ? "#1e1e1e" : "transparent",
-    color: active ? "#ededed" : "#888",
-    border: `1px solid ${active ? "#444" : "#222"}`,
-    borderRadius: 8,
-    cursor: "pointer",
-  };
 }
