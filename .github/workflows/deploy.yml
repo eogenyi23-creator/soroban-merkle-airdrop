@@ -18,6 +18,9 @@ on:
       token_address:
         description: "SEP-41 token contract address"
         required: true
+      expiration:
+        description: "Unix timestamp (seconds) after which reclaim is permitted"
+        required: true
 
 jobs:
   deploy:
@@ -55,7 +58,8 @@ jobs:
             --admin $(stellar keys address deployer) \
             --token ${{ inputs.token_address }} \
             --merkle_root ${{ inputs.merkle_root }} \
-            --total_amount ${{ inputs.total_amount }}
+            --total_amount ${{ inputs.total_amount }} \
+            --expiration ${{ inputs.expiration }}
       - name: Print result
         run: |
           echo "Contract ID: ${{ steps.deploy.outputs.contract_id }}"

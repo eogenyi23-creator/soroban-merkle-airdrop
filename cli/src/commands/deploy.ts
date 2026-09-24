@@ -43,7 +43,8 @@ export const deployCommand = new Command("deploy")
       `       --admin $(stellar keys address deployer) \\\n` +
       `       --token ${opts.token} \\\n` +
       `       --merkle_root ${tree.root} \\\n` +
-      `       --total_amount ${tree.totalAmount}\n`
+      `       --total_amount ${tree.totalAmount} \\\n` +
+      `       --expiration <UNIX_TIMESTAMP>\n`
     ));
 
     console.log(chalk.green("See docs/deploying.md for full instructions.\n"));
