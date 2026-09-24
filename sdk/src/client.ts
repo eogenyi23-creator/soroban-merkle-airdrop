@@ -53,6 +53,17 @@ export function createAirdropClient(config: NetworkConfig) {
   }
 
   /**
+   * Fetch the expiration timestamp (Unix seconds) after which reclaim is allowed.
+   * Returns null if the contract has not been initialised or has no expiration set.
+   */
+  async function expiration(): Promise<bigint | null> {
+    const result = await simulateRead(contractInst.call("expiration"));
+    const native = scValToNative(result);
+    if (native === null || native === undefined) return null;
+    return BigInt(native as number);
+  }
+
+  /**
    * Submit a claim transaction.
    *
    * @param claimProof - The proof package from `buildMerkleTree`.
@@ -248,7 +259,7 @@ export function createAirdropClient(config: NetworkConfig) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  return { isClaimed, isActive, merkleRoot, totalDeposited, claim, buildClaimTransaction, submitSignedTransaction };
+  return { isClaimed, isActive, merkleRoot, totalDeposited, expiration, claim, buildClaimTransaction, submitSignedTransaction };
 }
 
 /**
