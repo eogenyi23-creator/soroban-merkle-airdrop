@@ -230,6 +230,36 @@ impl AirdropContract {
         Ok(())
     }
 
+    /// Transfer admin ownership to a new address.
+    ///
+    /// The current admin must authorise this call. Once transferred, the new
+    /// admin has full control over `set_active`, `reclaim`, and future
+    /// `transfer_admin` calls.
+    ///
+    /// Emits an event with topic `("admin_transfer", old_admin)` and data
+    /// `new_admin` so off-chain indexers can track ownership history.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_admin` - Address to become the new admin.
+    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), AirdropError> {
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(AirdropError::NotInitialized)?;
+        old_admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+
+        env.events().publish(
+            (symbol_short!("adm_xfer"), old_admin),
+            new_admin,
+        );
+
+        Ok(())
+    }
+
     /// Restore the contract instance from archival.
     ///
     /// Soroban's state-archival mechanism can archive instance storage once its

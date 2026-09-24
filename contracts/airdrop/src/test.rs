@@ -595,6 +595,95 @@ fn test_leaf_hash_known_vector() {
     );
 }
 
+// ─── Issue #23: transfer_admin ─────────────────────────────────────────────
+
+/// Successful admin transfer: admin() reflects new owner and the event is emitted.
+#[test]
+fn test_transfer_admin_success() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    client.transfer_admin(&new_admin);
+
+    // admin() must now return the new admin.
+    assert_eq!(client.admin(), Some(new_admin.clone()));
+
+    // Verify event ("adm_xfer", old_admin) → new_admin was emitted.
+    let events = env.events().all();
+    let xfer_event = events.iter().find(|(_contract, topics, data)| {
+        use soroban_sdk::IntoVal;
+        *topics == (symbol_short!("adm_xfer"), admin.clone()).into_val(&env)
+            && *data == new_admin.clone().into_val(&env)
+    });
+    assert!(xfer_event.is_some(), "transfer_admin must emit ('adm_xfer', old_admin) → new_admin");
+}
+
+/// Non-admin calling transfer_admin must panic (auth failure).
+#[test]
+#[should_panic]
+fn test_non_admin_transfer_admin_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    // Authorize non_admin instead of the real admin — must panic.
+    env.set_auths(&[MockAuth {
+        address: &non_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "transfer_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }.into()]);
+
+    client.transfer_admin(&new_admin);
+}
+
+/// After a transfer, the new admin can call set_active; the old admin cannot.
+#[test]
+fn test_new_admin_can_set_active() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    client.transfer_admin(&new_admin);
+
+    // New admin pauses the airdrop — must succeed.
+    client.set_active(&false);
+    assert!(!client.is_active());
+}
+
+/// transfer_admin on an uninitialised contract returns NotInitialized.
+#[test]
+fn test_transfer_admin_uninitialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AirdropContract, ());
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let new_admin = Address::generate(&env);
+
+    let result = client.try_transfer_admin(&new_admin);
+    assert_eq!(result, Err(Ok(AirdropError::NotInitialized)));
+}
+
 // ─── Issue #62: restore() helper ───────────────────────────────────────────
 
 /// restore() should extend the instance TTL even when called by a random
