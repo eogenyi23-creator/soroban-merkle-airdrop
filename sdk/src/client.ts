@@ -22,6 +22,7 @@ import { AirdropContractError, RpcError } from "./types.js";
 export function createAirdropClient(config: NetworkConfig) {
   const server = new rpc.Server(config.rpcUrl, { allowHttp: false });
   const contractInst = new Contract(config.contractId);
+  const pollTimeoutMs = config.pollTimeoutMs ?? 60_000;
 
   /** Check if an address has already claimed. */
   async function isClaimed(address: string): Promise<boolean> {
@@ -110,8 +111,14 @@ export function createAirdropClient(config: NetworkConfig) {
     }
 
     const txHash = sendResult.hash;
+    const claimDeadline = Date.now() + pollTimeoutMs;
     while (true) {
       await sleep(2000);
+      if (Date.now() >= claimDeadline) {
+        throw new RpcError(
+          `Transaction confirmation timeout after ${pollTimeoutMs}ms: ${txHash}`
+        );
+      }
       const poll = await server.getTransaction(txHash);
       if (poll.status === "SUCCESS") {
         return {
@@ -196,8 +203,14 @@ export function createAirdropClient(config: NetworkConfig) {
     }
 
     const txHash = sendResult.hash;
+    const submitDeadline = Date.now() + pollTimeoutMs;
     while (true) {
       await sleep(2000);
+      if (Date.now() >= submitDeadline) {
+        throw new RpcError(
+          `Transaction confirmation timeout after ${pollTimeoutMs}ms: ${txHash}`
+        );
+      }
       const poll = await server.getTransaction(txHash);
       if (poll.status === "SUCCESS") {
         return {
