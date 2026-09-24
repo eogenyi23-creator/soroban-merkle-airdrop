@@ -2,9 +2,9 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
+    testutils::{storage::Instance as _, Address as _, Events, Ledger, MockAuth, MockAuthInvoke},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, BytesN, Env, IntoVal, Vec,
+    Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
 
 // ─── Test helpers ──────────────────────────────────────────────────────────
@@ -63,6 +63,28 @@ fn merkle_pair(env: &Env, a: BytesN<32>, b: BytesN<32>) -> BytesN<32> {
     data.append(&first.into());
     data.append(&second.into());
     env.crypto().sha256(&data).into()
+}
+
+/// Events published by this contract during the most recent invocation.
+///
+/// `Events::all()` returns the events of the last invocation only, and a failed
+/// invocation reports none at all.
+fn contract_events(env: &Env, contract_id: &Address) -> soroban_sdk::testutils::ContractEvents {
+    env.events().all().filter_by_contract(contract_id)
+}
+
+/// Build the expected `(contract_id, topics, data)` list for one invocation,
+/// which is the representation `ContractEvents` compares against.
+fn expected_events(
+    env: &Env,
+    contract_id: &Address,
+    events: &[((Symbol, Address), Val)],
+) -> Vec<(Address, Vec<Val>, Val)> {
+    let mut out = Vec::new(env);
+    for (topics, data) in events.iter() {
+        out.push_back((contract_id.clone(), topics.clone().into_val(env), data.clone()));
+    }
+    out
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -168,6 +190,20 @@ fn test_pause_and_unpause() {
 
     // ── Pause ────────────────────────────────────────────────────────────────
     client.set_active(&false);
+
+    // Verify the "paused" event was emitted for the pause call. The events are
+    // read before the claim below, because `all()` only reports the most recent
+    // invocation.
+    assert_eq!(
+        contract_events(&env, &contract_id),
+        expected_events(
+            &env,
+            &contract_id,
+            &[((symbol_short!("paused"), admin.clone()), false.into_val(&env))],
+        ),
+        "set_active(false) must emit a 'paused' event with data=false"
+    );
+
     let result = client.try_claim(&claimant, &1000, &proof);
     assert_eq!(result, Err(Ok(AirdropError::NotActive)));
 
@@ -192,6 +228,16 @@ fn test_pause_and_unpause() {
 
     // ── Unpause ──────────────────────────────────────────────────────────────
     client.set_active(&true);
+    assert_eq!(
+        contract_events(&env, &contract_id),
+        expected_events(
+            &env,
+            &contract_id,
+            &[((symbol_short!("paused"), admin.clone()), true.into_val(&env))],
+        ),
+        "set_active(true) must emit a 'paused' event with data=true"
+    );
+
     client.claim(&claimant, &1000, &proof); // succeeds again
     assert!(client.is_claimed(&claimant));
 
@@ -226,7 +272,7 @@ fn test_set_active_uninitialized_no_event() {
 
     // No events should have been published.
     assert!(
-        env.events().all().is_empty(),
+        env.events().all().events().is_empty(),
         "No event should be emitted when set_active fails with NotInitialized"
     );
 }
@@ -318,14 +364,16 @@ fn test_query_merkle_root_extends_ttl() {
     mint(&env, &token, &admin, &admin, 1500);
     client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
 
-    let ttl_before = env.storage().instance().get_ttl();
+    let ttl_before = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     // Simulate many ledgers passing without a claim — TTL would drop.
     // We reset it to 1 to emulate a near-archived contract.
-    env.storage().instance().extend_ttl(1, 1);
+    // Shrinking the TTL also has to happen inside the contract's context.
+    env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
 
     client.merkle_root();
 
-    let ttl_after = env.storage().instance().get_ttl();
+    // `get_ttl` is only readable from inside the contract's own context.
+    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     assert!(
         ttl_after > 1,
         "merkle_root() must refresh instance TTL; ttl_before={ttl_before}, ttl_after={ttl_after}"
@@ -342,7 +390,8 @@ fn test_query_is_claimed_extends_ttl() {
     mint(&env, &token, &admin, &admin, 1500);
     client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
 
-    env.storage().instance().extend_ttl(1, 1);
+    // Shrinking the TTL also has to happen inside the contract's context.
+    env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.is_claimed(&claimant);
 
     let ttl_after = env.storage().instance().get_ttl();
@@ -362,7 +411,8 @@ fn test_query_is_active_extends_ttl() {
     mint(&env, &token, &admin, &admin, 1500);
     client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
 
-    env.storage().instance().extend_ttl(1, 1);
+    // Shrinking the TTL also has to happen inside the contract's context.
+    env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.is_active();
 
     let ttl_after = env.storage().instance().get_ttl();
@@ -382,7 +432,8 @@ fn test_query_token_extends_ttl() {
     mint(&env, &token, &admin, &admin, 1500);
     client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
 
-    env.storage().instance().extend_ttl(1, 1);
+    // Shrinking the TTL also has to happen inside the contract's context.
+    env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.token();
 
     let ttl_after = env.storage().instance().get_ttl();
@@ -402,7 +453,8 @@ fn test_query_admin_extends_ttl() {
     mint(&env, &token, &admin, &admin, 1500);
     client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
 
-    env.storage().instance().extend_ttl(1, 1);
+    // Shrinking the TTL also has to happen inside the contract's context.
+    env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.admin();
 
     let ttl_after = env.storage().instance().get_ttl();
@@ -422,7 +474,8 @@ fn test_query_total_deposited_extends_ttl() {
     mint(&env, &token, &admin, &admin, 1500);
     client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
 
-    env.storage().instance().extend_ttl(1, 1);
+    // Shrinking the TTL also has to happen inside the contract's context.
+    env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.total_deposited();
 
     let ttl_after = env.storage().instance().get_ttl();
@@ -442,7 +495,8 @@ fn test_query_expiration_extends_ttl() {
     mint(&env, &token, &admin, &admin, 1500);
     client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
 
-    env.storage().instance().extend_ttl(1, 1);
+    // Shrinking the TTL also has to happen inside the contract's context.
+    env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.expiration();
 
     let ttl_after = env.storage().instance().get_ttl();
@@ -698,18 +752,26 @@ fn test_restore_extends_ttl() {
     mint(&env, &token, &admin, &admin, 1500);
     client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
 
-    // Simulate near-archival: force TTL down to 1.
-    env.storage().instance().extend_ttl(1, 1);
-    let ttl_before = env.storage().instance().get_ttl();
-    assert_eq!(ttl_before, 1, "TTL should be 1 before restore");
+    // Simulate near-archival. The instance TTL is counted down by the ledger
+    // sequence, so moving the ledger forward is what actually shortens it —
+    // `extend_ttl` only ever writes a larger value, and `extend_ttl(1, 1)`
+    // leaves a fresh instance (12.6M ledgers) untouched.
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + INSTANCE_TTL - 1);
+    let ttl_before = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
+    assert!(
+        ttl_before < INSTANCE_TTL,
+        "the ledger jump must consume the instance TTL: before={ttl_before} INSTANCE_TTL={INSTANCE_TTL}"
+    );
 
     // Anyone can call restore() — no auth needed.
     client.restore();
 
-    let ttl_after = env.storage().instance().get_ttl();
+    // `get_ttl` is only readable from inside the contract's own context.
+    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     assert!(
-        ttl_after > 1,
-        "restore() must extend instance TTL; ttl_after={ttl_after}"
+        ttl_after > ttl_before,
+        "restore() must extend the instance TTL; before={ttl_before} after={ttl_after}"
     );
 }
 

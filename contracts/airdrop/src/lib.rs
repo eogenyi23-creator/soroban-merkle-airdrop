@@ -42,7 +42,7 @@ use soroban_sdk::{
     contract, contractimpl, contractmeta, symbol_short, token::Client as TokenClient, Address,
     BytesN, Env, Vec,
 };
-use types::{AirdropError, DataKey};
+use types::{AirdropEntry, AirdropError, DataKey};
 
 contractmeta!(
     key = "Description",
@@ -145,43 +145,51 @@ impl AirdropContract {
         proof: Vec<BytesN<32>>,
     ) -> Result<(), AirdropError> {
         claimant.require_auth();
+        claim_entry(&env, &claimant, amount, &proof)
+    }
 
-        // Extend instance storage TTL so core contract data doesn't expire.
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
-
-        // Check active.
-        let active: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Active)
-            .ok_or(AirdropError::NotInitialized)?;
-        if !active {
-            return Err(AirdropError::NotActive);
-        }
-
-        if amount <= 0 {
-            return Err(AirdropError::ZeroAmount);
-        }
-
-        // Check not already claimed.
-        let claimed_key = DataKey::Claimed(claimant.clone());
-        if env.storage().persistent().has(&claimed_key) {
-            return Err(AirdropError::AlreadyClaimed);
-        }
-
-        // Verify Merkle proof.
-        let root: BytesN<32> = env
-            .storage()
-            .instance()
-            .get(&DataKey::MerkleRoot)
-            .ok_or(AirdropError::NotInitialized)?;
-
-        let leaf = merkle::leaf_hash(&env, &claimant, amount);
-
-        if !merkle::verify_proof(&env, &root, leaf, &proof) {
+    /// Claim on behalf of several recipients in a single transaction.
+    ///
+    /// `entries` and `proofs` are parallel vectors: `proofs[i]` must prove the
+    /// inclusion of `entries[i]`. Each claimant authorises the call, exactly as
+    /// with [`Self::claim`].
+    ///
+    /// The batch is all-or-nothing. The first entry that fails — bad proof,
+    /// wrong amount, already claimed, airdrop paused — aborts the invocation and
+    /// every claim in it is rolled back, so a partially paid batch cannot happen.
+    /// Successful entries emit the same `claimed` event as a single claim.
+    ///
+    /// An empty batch is a no-op.
+    pub fn batch_claim(
+        env: Env,
+        entries: Vec<AirdropEntry>,
+        proofs: Vec<Vec<BytesN<32>>>,
+    ) -> Result<(), AirdropError> {
+        // Without one proof per entry there is nothing to verify against.
+        if entries.len() != proofs.len() {
             return Err(AirdropError::InvalidProof);
+        }
+
+        // Authorise every claimant before touching balances: an unsigned entry
+        // must stop the call up front, not after other people were already paid.
+        //
+        // A claimant repeated in the batch is authorised once — the host rejects
+        // a second `require_auth` for the same address inside one invocation,
+        // which would abort the transaction instead of reporting the double
+        // claim. The repeat is caught by the per-claim guard below, where the
+        // caller can see it.
+        for i in 0..entries.len() {
+            let claimant = entries.get_unchecked(i).claimant;
+            let already_authorised = (0..i).any(|j| entries.get_unchecked(j).claimant == claimant);
+            if !already_authorised {
+                claimant.require_auth();
+            }
+        }
+
+        for i in 0..entries.len() {
+            let entry = entries.get_unchecked(i);
+            let proof = proofs.get_unchecked(i);
+            claim_entry(&env, &entry.claimant, entry.amount, &proof)?;
         }
 
         // Mark as claimed before transfer (re-entrancy guard).
@@ -398,4 +406,80 @@ impl AirdropContract {
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         env.storage().instance().get(&DataKey::Expiration)
     }
+}
+
+/// Shared claim path behind [`AirdropContract::claim`] and
+/// [`AirdropContract::batch_claim`].
+///
+/// Both entry points go through this function so the rules — airdrop active,
+/// positive amount, one claim per address, valid Merkle proof, mark before
+/// transfer — cannot drift apart. Returns `InvalidProof` for a proof that does
+/// not verify, and the caller decides whether that aborts one claim or a whole
+/// batch.
+fn claim_entry(
+    env: &Env,
+    claimant: &Address,
+    amount: i128,
+    proof: &Vec<BytesN<32>>,
+) -> Result<(), AirdropError> {
+    // Extend instance storage TTL so core contract data doesn't expire.
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+
+    // Check active.
+    let active: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::Active)
+        .ok_or(AirdropError::NotInitialized)?;
+    if !active {
+        return Err(AirdropError::NotActive);
+    }
+
+    if amount <= 0 {
+        return Err(AirdropError::ZeroAmount);
+    }
+
+    // Check not already claimed.
+    let claimed_key = DataKey::Claimed(claimant.clone());
+    if env.storage().persistent().has(&claimed_key) {
+        return Err(AirdropError::AlreadyClaimed);
+    }
+
+    // Verify Merkle proof.
+    let root: BytesN<32> = env
+        .storage()
+        .instance()
+        .get(&DataKey::MerkleRoot)
+        .ok_or(AirdropError::NotInitialized)?;
+
+    let leaf = merkle::leaf_hash(env, claimant, amount);
+
+    if !merkle::verify_proof(env, &root, leaf, proof) {
+        return Err(AirdropError::InvalidProof);
+    }
+
+    // Mark as claimed before transfer (re-entrancy guard).
+    env.storage().persistent().set(&claimed_key, &true);
+    env.storage()
+        .persistent()
+        .extend_ttl(&claimed_key, CLAIMED_TTL_THRESHOLD, CLAIMED_TTL);
+
+    // Transfer tokens to claimant.
+    let token: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::TokenAddress)
+        .unwrap();
+    TokenClient::new(env, &token).transfer(
+        &env.current_contract_address(),
+        claimant,
+        &amount,
+    );
+
+    env.events()
+        .publish((symbol_short!("claimed"), claimant.clone()), amount);
+
+    Ok(())
 }
