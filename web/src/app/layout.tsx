@@ -111,6 +111,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           .footer a { color: #8ae4ff; }
 
           /* ── Feature grid (landing page) ─────────────── */
+          /* Responsive breakpoints (#79):
+           *   ≥ 768px  → 3-column grid (default)
+           *   600–767px → 2-column grid
+           *   < 600px  → single column (mobile-first)
+           * All interactive elements have min-height: 44px (touch target).
+           */
           .feature-grid {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
