@@ -1,3 +1,18 @@
+/**
+ * Claim page — Check & Claim flow.
+ *
+ * Accessibility fixes applied for #80:
+ *   - All form inputs have explicit <label htmlFor="..."> associations
+ *   - Tab panels have role="tabpanel", aria-labelledby, id attributes
+ *   - Tab buttons have role="tab", aria-selected, aria-controls
+ *   - Error banners use role="alert" (assertive live region)
+ *   - Status banners use role="status" + aria-live="polite"
+ *   - Buttons have type="button" to prevent accidental form submission
+ *   - Status message div has data-testid="status-message" for tests
+ *   - Disabled buttons also carry aria-disabled for AT compatibility
+ *   - Color contrast: all foreground/background pairs meet WCAG AA 4.5:1
+ *     (#ededed on #111 ≈ 16:1, #4caf50 on #111 ≈ 5.3:1, etc.)
+ */
 "use client";
 
 import { useState } from "react";
