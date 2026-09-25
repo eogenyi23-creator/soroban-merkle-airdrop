@@ -12,10 +12,21 @@
  *   - Disabled buttons also carry aria-disabled for AT compatibility
  *   - Color contrast: all foreground/background pairs meet WCAG AA 4.5:1
  *     (#ededed on #111 ≈ 16:1, #4caf50 on #111 ≈ 5.3:1, etc.)
+ *
+ * #77: Expiration banner
+ *   - Queries expiration() on page load
+ *   - Shows "expired" banner when past expiration timestamp
+ *   - Shows "expires soon" warning within 48 hours of expiration
+ *   - Disables Claim button when expired
+ *
+ * #78: CSS loading spinner
+ *   - Pure-CSS spinner shown during status === 'checking' or 'claiming'
+ *   - Inputs disabled during loading states
+ *   - Spinner has aria-label and role="status" for accessibility
  */
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { createAirdropClient, verifyProof, NETWORKS } from "@soroban-merkle-airdrop/sdk";
 import {
   getPublicKey,
@@ -26,6 +37,9 @@ import { useNetwork } from "../context/NetworkContext";
 
 /** If set, pre-fills the tree URL input so users don't have to type it. */
 const DEFAULT_TREE_URL = process.env.NEXT_PUBLIC_MERKLE_TREE_URL ?? "";
+
+/** 48 hours in seconds */
+const WARN_THRESHOLD_SECS = 48 * 60 * 60;
 
 export type Status =
   | "idle"
@@ -39,6 +53,25 @@ export type Status =
 
 /** Source for the merkle tree data */
 export type TreeSource = "url" | "paste";
+
+// ─── Pure-CSS spinner styles ─────────────────────────────────────────────────
+const spinnerStyles = `
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  .claim-spinner {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid rgba(138, 228, 255, 0.25);
+    border-top-color: #8ae4ff;
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+    vertical-align: middle;
+    margin-right: 8px;
+    flex-shrink: 0;
+  }
+`;
 
 export default function ClaimPage() {
   const { network, contractId } = useNetwork();
@@ -63,6 +96,57 @@ export default function ClaimPage() {
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("");
   const [txHash, setTxHash] = useState("");
+
+  // ── #77: Expiration state ────────────────────────────────────────────────
+  /** Unix timestamp (seconds) when the airdrop expires, or null if unknown. */
+  const [expirationTs, setExpirationTs] = useState<bigint | null>(null);
+  const [expirationLoading, setExpirationLoading] = useState(false);
+
+  /** True if the airdrop has already expired. */
+  const isExpired =
+    expirationTs !== null && BigInt(Math.floor(Date.now() / 1000)) > expirationTs;
+
+  /** True if expiration is within 48 hours (but not yet expired). */
+  const expiresSoon =
+    !isExpired &&
+    expirationTs !== null &&
+    expirationTs - BigInt(Math.floor(Date.now() / 1000)) <= BigInt(WARN_THRESHOLD_SECS);
+
+  /** Human-readable expiration date string. */
+  const expirationDate =
+    expirationTs !== null
+      ? new Date(Number(expirationTs) * 1000).toLocaleString(undefined, {
+          dateStyle: "long",
+          timeStyle: "short",
+        })
+      : null;
+
+  // ── Fetch expiration on mount (when contractId becomes available) ────────
+  useEffect(() => {
+    if (!contractId) return;
+
+    let cancelled = false;
+    setExpirationLoading(true);
+
+    createAirdropClient({ ...NETWORKS[network], contractId })
+      .expiration()
+      .then((ts) => {
+        if (!cancelled) setExpirationTs(ts);
+      })
+      .catch(() => {
+        // Non-fatal: expiration display is best-effort
+      })
+      .finally(() => {
+        if (!cancelled) setExpirationLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [contractId, network]);
+
+  // ── #78: Derived loading flag ──────────────────────────────────────────
+  const isLoading = status === "checking" || status === "claiming";
 
   // ─── Connect Wallet (Freighter) ─────────────────────────────────────────────
 
@@ -262,10 +346,84 @@ export default function ClaimPage() {
 
   return (
     <div>
+      {/* ── Inject pure-CSS spinner keyframes ── */}
+      <style>{spinnerStyles}</style>
+
       <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>Check &amp; Claim</h1>
       <p style={{ color: "#888", marginBottom: 32 }}>
         Connect your Freighter wallet to check eligibility and claim your tokens.
       </p>
+
+      {/* ── #77: Expired banner ── */}
+      {isExpired && (
+        <div
+          role="alert"
+          style={{
+            padding: "14px 18px",
+            borderRadius: 8,
+            background: "#1a0000",
+            border: "1px solid #ff6b6b",
+            color: "#ff6b6b",
+            fontSize: 14,
+            marginBottom: 20,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <span style={{ fontSize: 20 }}>🔒</span>
+          <span>
+            <strong>This airdrop has expired.</strong>{" "}
+            Unclaimed tokens have been returned to the organiser.
+          </span>
+        </div>
+      )}
+
+      {/* ── #77: Expires-soon warning ── */}
+      {expiresSoon && expirationDate && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            padding: "14px 18px",
+            borderRadius: 8,
+            background: "#1a1000",
+            border: "1px solid #f0a500",
+            color: "#f0a500",
+            fontSize: 14,
+            marginBottom: 20,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <span style={{ fontSize: 20 }}>⏳</span>
+          <span>
+            <strong>This airdrop expires on {expirationDate}.</strong>{" "}
+            Claim soon!
+          </span>
+        </div>
+      )}
+
+      {/* ── #78: Full-page loading overlay while expiration is being fetched ── */}
+      {expirationLoading && (
+        <div
+          role="status"
+          aria-label="Loading airdrop status"
+          aria-live="polite"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#888",
+            fontSize: 13,
+            marginBottom: 16,
+          }}
+        >
+          <span className="claim-spinner" aria-hidden="true" />
+          Checking airdrop status…
+        </div>
+      )}
 
       <div className="claim-form-section">
 
@@ -277,6 +435,8 @@ export default function ClaimPage() {
               onClick={handleConnectWallet}
               className="claim-btn"
               style={{ background: "#8ae4ff", color: "#000" }}
+              disabled={isLoading}
+              aria-disabled={isLoading}
             >
               Connect Wallet
             </button>
@@ -330,6 +490,8 @@ export default function ClaimPage() {
               aria-controls="tabpanel-url"
               onClick={() => { setTreeSource("url"); setFetchError(""); }}
               className="tab-btn"
+              disabled={isLoading}
+              aria-disabled={isLoading}
             >
               Load from URL
             </button>
@@ -341,6 +503,8 @@ export default function ClaimPage() {
               aria-controls="tabpanel-paste"
               onClick={() => { setTreeSource("paste"); setFetchError(""); }}
               className="tab-btn"
+              disabled={isLoading}
+              aria-disabled={isLoading}
             >
               Paste JSON
             </button>
@@ -367,13 +531,16 @@ export default function ClaimPage() {
                     placeholder="https://example.com/merkle-tree.json"
                     className="claim-input"
                     aria-describedby={fetchError ? "fetch-error" : undefined}
+                    disabled={isLoading}
+                    aria-disabled={isLoading}
                   />
                   <button
                     type="button"
                     onClick={handleFetchTree}
-                    disabled={!treeUrl.trim() || isFetching}
+                    disabled={!treeUrl.trim() || isFetching || isLoading}
                     className="claim-btn"
                     style={{ background: "#8ae4ff", color: "#000" }}
+                    aria-disabled={!treeUrl.trim() || isFetching || isLoading}
                   >
                     {isFetching ? "Fetching…" : "Fetch Tree"}
                   </button>
@@ -423,6 +590,8 @@ export default function ClaimPage() {
                 className="claim-input"
                 style={{ fontFamily: "monospace", fontSize: 12 }}
                 aria-describedby={fetchError ? "paste-error" : undefined}
+                disabled={isLoading}
+                aria-disabled={isLoading}
               />
 
               {treeLoaded && (
@@ -448,11 +617,19 @@ export default function ClaimPage() {
         <button
           type="button"
           onClick={handleCheck}
-          disabled={!walletConnected || status === "checking"}
+          disabled={!walletConnected || isLoading || isExpired}
           className="claim-btn"
           style={{ background: "#8ae4ff", color: "#000" }}
-          aria-disabled={!walletConnected || status === "checking"}
+          aria-disabled={!walletConnected || isLoading || isExpired}
         >
+          {/* #78: Spinner inside the button during 'checking' */}
+          {status === "checking" && (
+            <span
+              className="claim-spinner"
+              role="status"
+              aria-label="Checking eligibility"
+            />
+          )}
           {status === "checking" ? "Checking..." : "Check Eligibility"}
         </button>
 
@@ -480,11 +657,20 @@ export default function ClaimPage() {
           <button
             type="button"
             onClick={handleClaim}
-            disabled={status === "claiming"}
+            disabled={status === "claiming" || isExpired}
             className="claim-btn"
-            style={{ background: "#4caf50", color: "#000" }}
-            aria-disabled={status === "claiming"}
+            style={{ background: isExpired ? "#555" : "#4caf50", color: "#000" }}
+            aria-disabled={status === "claiming" || isExpired}
           >
+            {/* #78: Spinner inside the button during 'claiming' */}
+            {status === "claiming" && (
+              <span
+                className="claim-spinner"
+                role="status"
+                aria-label="Submitting claim transaction"
+                style={{ borderTopColor: "#4caf50" }}
+              />
+            )}
             {status === "claiming" ? "Claiming..." : "Claim Tokens →"}
           </button>
         )}

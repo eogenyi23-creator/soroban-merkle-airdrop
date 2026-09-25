@@ -268,6 +268,46 @@ impl AirdropContract {
         Ok(())
     }
 
+    /// Upgrade the contract's WASM bytecode. Admin only.
+    ///
+    /// Replaces the running WASM with the code identified by `new_wasm_hash`,
+    /// which must already have been uploaded to the network via
+    /// `stellar contract upload`.
+    ///
+    /// # Safety / upgrade notes
+    ///
+    /// - **State is preserved.** All instance and persistent storage entries
+    ///   survive the upgrade — claimed entries remain claimed, the Merkle root
+    ///   and token address are unchanged, and active claims continue to work.
+    /// - **The upgrade is immediate.** It takes effect at the next invocation
+    ///   after this transaction is applied; there is no staged upgrade or
+    ///   time-lock. Consider pausing the airdrop (`set_active(false)`) before
+    ///   upgrading if you want to prevent claims during the upgrade window.
+    /// - **The new WASM must be compatible.** Removing or renaming storage keys
+    ///   or changing the contract interface will break existing clients.
+    /// - **Emit an event** so off-chain indexers and monitoring tools can detect
+    ///   upgrades.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_wasm_hash` - 32-byte WASM hash of the replacement bytecode.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), AirdropError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(AirdropError::NotInitialized)?;
+        admin.require_auth();
+
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+
+        env.events()
+            .publish((symbol_short!("upgrade"), admin), new_wasm_hash);
+
+        Ok(())
+    }
+
     /// Restore the contract instance from archival.
     ///
     /// Soroban's state-archival mechanism can archive instance storage once its
@@ -339,11 +379,28 @@ impl AirdropContract {
     ///
     /// Refreshes instance storage TTL so dormant airdrops with no new claims
     /// do not have their on-chain data archived.
+    ///
+    /// Issue #43: also refreshes the *persistent* `Claimed(addr)` entry TTL
+    /// if the entry exists. Without this refresh, an archived `Claimed` entry
+    /// causes `is_claimed()` to return `false`, which would allow a
+    /// double-claim after the entry is archived.
     pub fn is_claimed(env: Env, claimant: Address) -> bool {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
-        env.storage().persistent().has(&DataKey::Claimed(claimant))
+
+        let key = DataKey::Claimed(claimant);
+        let exists = env.storage().persistent().has(&key);
+
+        // Refresh the persistent Claimed entry TTL so it cannot archive while
+        // the airdrop is live, which would silently allow a double-claim.
+        if exists {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, CLAIMED_TTL_THRESHOLD, CLAIMED_TTL);
+        }
+
+        exists
     }
 
     /// Return whether the airdrop is currently active.

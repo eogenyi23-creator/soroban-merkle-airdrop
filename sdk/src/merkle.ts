@@ -1,13 +1,16 @@
 /**
+ * @module merkle
+ * @description
  * Merkle tree builder for soroban-merkle-airdrop.
  *
  * Produces a binary Merkle tree from a list of (address, amount) pairs.
  * The on-chain contract uses SHA-256 with lexicographic node sorting, so
  * this implementation must match exactly.
  *
- * # Leaf hash
- *
- *   SHA-256( SHA-256(address_strkey_utf8_bytes) ++ amount_big_endian[16] )
+ * **Leaf hash algorithm**
+ * ```
+ * SHA-256( SHA-256(address_strkey_utf8_bytes) ++ amount_big_endian[16] )
+ * ```
  *
  * The address is hashed as its Stellar strkey string (e.g. `G...` for
  * accounts, `C...` for contracts) encoded as UTF-8 bytes — NOT as raw
@@ -15,31 +18,49 @@
  * which calls `claimant.to_string()` to obtain the strkey and then
  * SHA-256-hashes the resulting bytes.
  *
- * # Node hash
- *   SHA-256(min(left, right) ++ max(left, right))
- *   (sorted so the tree is position-independent)
+ * **Node hash algorithm**
+ * ```
+ * SHA-256(min(left, right) ++ max(left, right))
+ * ```
+ * Sorted so the tree is position-independent.
  */
 
 import { createHash } from "crypto";
 import type { AirdropEntry, ClaimProof, MerkleTreeResult } from "./types.js";
 
-// ─── Hashing ────────────────────────────────────────────────────────────────
+// ─── Internal helpers ────────────────────────────────────────────────────────
 
+/** @internal */
 function sha256(data: Buffer): Buffer {
   return createHash("sha256").update(data).digest();
 }
 
+// ─── Public API ──────────────────────────────────────────────────────────────
+
 /**
  * Compute the leaf hash for a given (address, amount) pair.
+ *
  * Must match `merkle::leaf_hash` in the Rust contract exactly.
  *
- * Algorithm:
- *   1. addr_hash = SHA-256(UTF-8 bytes of the Stellar strkey string)
- *   2. leaf = SHA-256(addr_hash ++ amount as 16-byte big-endian i128)
+ * **Algorithm:**
+ * 1. `addr_hash = SHA-256(UTF-8 bytes of the Stellar strkey string)`
+ * 2. `leaf = SHA-256(addr_hash ++ amount as 16-byte big-endian i128)`
  *
- * Note: the address is hashed as its strkey STRING bytes, not as the raw
+ * Note: the address is hashed as its strkey **string** bytes, not as the raw
  * 32-byte public key / contract ID. Decoding the strkey to raw bytes and
  * hashing those would produce a different (incorrect) result.
+ *
+ * @param address - Stellar strkey address (G... for accounts, C... for contracts).
+ * @param amount - Token amount in base units (bigint, non-negative).
+ * @returns 32-byte SHA-256 leaf hash as a Buffer.
+ *
+ * @example
+ * ```ts
+ * import { leafHash } from '@soroban-merkle-airdrop/sdk';
+ *
+ * const hash = leafHash("GABC...", 1000n);
+ * console.log(hash.toString("hex")); // 64-character hex string
+ * ```
  */
 export function leafHash(address: string, amount: bigint): Buffer {
   // Step 1: SHA-256 the UTF-8 bytes of the strkey string.
@@ -58,28 +79,58 @@ export function leafHash(address: string, amount: bigint): Buffer {
 }
 
 /**
- * Hash two nodes together, sorting them lexicographically first.
+ * Hash two Merkle tree nodes together, sorting them lexicographically first.
+ *
  * Must match `merkle::hash_pair` in the Rust contract.
+ * Sorting ensures the tree is position-independent: swapping the left and right
+ * children produces the same parent hash.
+ *
+ * @param a - 32-byte left node hash (order relative to `b` does not matter).
+ * @param b - 32-byte right node hash.
+ * @returns 32-byte SHA-256 parent hash as a Buffer.
+ *
+ * @example
+ * ```ts
+ * import { hashPair } from '@soroban-merkle-airdrop/sdk';
+ *
+ * const parent = hashPair(leftHash, rightHash);
+ * // hashPair(leftHash, rightHash) === hashPair(rightHash, leftHash)
+ * ```
  */
 export function hashPair(a: Buffer, b: Buffer): Buffer {
   const [first, second] = a.compare(b) <= 0 ? [a, b] : [b, a];
   return sha256(Buffer.concat([first, second]));
 }
 
-// ─── Tree builder ───────────────────────────────────────────────────────────
-
 /**
  * Build a Merkle tree from a list of airdrop entries and return the root
  * and per-address claim proofs.
  *
+ * The resulting root must be stored on-chain via the contract's `initialize`
+ * function. Each `ClaimProof` in the returned map is passed to `claim` or
+ * `buildClaimTransaction` when a recipient wants to claim their tokens.
+ *
+ * @param entries - Array of `{ address, amount }` pairs. Addresses must be unique.
+ * @returns `{ root, proofs }` — the hex Merkle root and a map from address → ClaimProof.
+ * @throws {Error} If `entries` is empty or contains duplicate addresses.
+ *
  * @example
  * ```ts
+ * import { buildMerkleTree } from '@soroban-merkle-airdrop/sdk';
+ *
  * const { root, proofs } = buildMerkleTree([
  *   { address: "GABC...", amount: 1000n },
  *   { address: "GDEF...", amount: 500n },
+ *   { address: "GHIJ...", amount: 250n },
  * ]);
+ *
  * console.log("Merkle root:", root);
+ * // root is a 64-character hex string that goes on-chain
+ *
  * const proof = proofs.get("GABC...");
+ * if (proof) {
+ *   console.log("Proof hashes:", proof.proof);
+ * }
  * ```
  */
 export function buildMerkleTree(entries: AirdropEntry[]): MerkleTreeResult {
@@ -150,8 +201,33 @@ export function buildMerkleTree(entries: AirdropEntry[]): MerkleTreeResult {
 }
 
 /**
- * Verify that a proof is valid against a given root.
- * Useful for off-chain validation before submitting a claim transaction.
+ * Verify that a Merkle proof is valid against a known root.
+ *
+ * Useful for off-chain validation before submitting a claim transaction,
+ * and for confirming that a `merkle-tree.json` file has not been tampered with.
+ *
+ * @param root - The 64-character hex Merkle root string stored on-chain.
+ * @param address - The claimant's Stellar strkey address.
+ * @param amount - The allocated token amount in base units.
+ * @param proof - Ordered array of sibling hashes (hex strings) from leaf to root.
+ * @returns `true` if the proof is valid, `false` otherwise.
+ *
+ * @example
+ * ```ts
+ * import { buildMerkleTree, verifyProof } from '@soroban-merkle-airdrop/sdk';
+ *
+ * const { root, proofs } = buildMerkleTree([
+ *   { address: "GABC...", amount: 1000n },
+ *   { address: "GDEF...", amount: 500n },
+ * ]);
+ *
+ * const claimProof = proofs.get("GABC...")!;
+ * const valid = verifyProof(root, claimProof.address, claimProof.amount, claimProof.proof);
+ * console.log(valid); // true
+ *
+ * // Tampered amount returns false
+ * console.log(verifyProof(root, "GABC...", 9999n, claimProof.proof)); // false
+ * ```
  */
 export function verifyProof(
   root: string,

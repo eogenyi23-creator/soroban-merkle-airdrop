@@ -10,65 +10,85 @@ import chalk from "chalk";
 import ora from "ora";
 import { createAirdropClient, NETWORKS } from "@soroban-merkle-airdrop/sdk";
 
+export interface StatusOptions {
+  address?: string;
+}
+
+export interface StatusGlobalOptions {
+  network?: string;
+  contractId?: string;
+}
+
+/**
+ * Core logic for the status command, extracted so it can be unit-tested
+ * without Commander's state machine. The CLI wires this into the Command.
+ */
+export async function runStatusAction(
+  opts: StatusOptions,
+  globalOpts: StatusGlobalOptions
+): Promise<void> {
+  const network = globalOpts.network ?? "testnet";
+  const contractId = globalOpts.contractId ?? process.env.AIRDROP_CONTRACT_ID;
+
+  if (!contractId) {
+    console.error(chalk.red("Error: --contract-id or AIRDROP_CONTRACT_ID required"));
+    process.exit(1);
+  }
+
+  const spinner = ora(`Querying contract on ${chalk.cyan(network)}...`).start();
+  try {
+    const preset = NETWORKS[network];
+    const client = createAirdropClient({ ...preset, contractId });
+
+    const [active, root, total, exp] = await Promise.all([
+      client.isActive(),
+      client.merkleRoot(),
+      client.totalDeposited(),
+      client.expiration(),
+    ]);
+
+    // Format expiration for display.
+    let expirationLine: string;
+    if (exp === null) {
+      expirationLine = chalk.gray("not set");
+    } else {
+      const expMs = Number(exp) * 1000;
+      const expDate = new Date(expMs).toUTCString();
+      const nowMs = Date.now();
+      if (nowMs > expMs) {
+        expirationLine = `${expDate}  ${chalk.red("(EXPIRED)")}`;
+      } else {
+        expirationLine = expDate;
+      }
+    }
+
+    spinner.succeed("Contract status:");
+    console.log(`\n  ${chalk.bold("Contract:")}    ${chalk.cyan(contractId)}`);
+    console.log(`  ${chalk.bold("Network:")}     ${network}`);
+    console.log(`  ${chalk.bold("Active:")}      ${active ? chalk.green("yes") : chalk.red("no")}`);
+    console.log(`  ${chalk.bold("Root:")}        ${chalk.cyan(root ?? "not initialized")}`);
+    console.log(`  ${chalk.bold("Deposited:")}   ${total.toString()}`);
+    console.log(`  ${chalk.bold("Expiration:")}  ${expirationLine}`);
+
+    if (opts.address) {
+      const claimed = await client.isClaimed(opts.address);
+      console.log(
+        `\n  ${chalk.bold(opts.address)}: ${
+          claimed ? chalk.yellow("already claimed") : chalk.green("not yet claimed")
+        }`
+      );
+    }
+    console.log();
+  } catch (err) {
+    spinner.fail(`Error: ${(err as Error).message}`);
+    process.exit(1);
+  }
+}
+
 export const statusCommand = new Command("status")
   .description("Query on-chain airdrop contract status")
   .option("-a, --address <address>", "Check if a specific address has claimed")
   .action(async (opts, cmd) => {
     const globalOpts = cmd.parent?.opts() ?? {};
-    const network = globalOpts.network ?? "testnet";
-    const contractId = globalOpts.contractId ?? process.env.AIRDROP_CONTRACT_ID;
-
-    if (!contractId) {
-      console.error(chalk.red("Error: --contract-id or AIRDROP_CONTRACT_ID required"));
-      process.exit(1);
-    }
-
-    const spinner = ora(`Querying contract on ${chalk.cyan(network)}...`).start();
-    try {
-      const preset = NETWORKS[network];
-      const client = createAirdropClient({ ...preset, contractId });
-
-      const [active, root, total, exp] = await Promise.all([
-        client.isActive(),
-        client.merkleRoot(),
-        client.totalDeposited(),
-        client.expiration(),
-      ]);
-
-      // Format expiration for display.
-      let expirationLine: string;
-      if (exp === null) {
-        expirationLine = chalk.gray("not set");
-      } else {
-        const expMs = Number(exp) * 1000;
-        const expDate = new Date(expMs).toUTCString();
-        const nowMs = Date.now();
-        if (nowMs > expMs) {
-          expirationLine = `${expDate}  ${chalk.red("(EXPIRED)")}`;
-        } else {
-          expirationLine = expDate;
-        }
-      }
-
-      spinner.succeed("Contract status:");
-      console.log(`\n  ${chalk.bold("Contract:")}    ${chalk.cyan(contractId)}`);
-      console.log(`  ${chalk.bold("Network:")}     ${network}`);
-      console.log(`  ${chalk.bold("Active:")}      ${active ? chalk.green("yes") : chalk.red("no")}`);
-      console.log(`  ${chalk.bold("Root:")}        ${chalk.cyan(root ?? "not initialized")}`);
-      console.log(`  ${chalk.bold("Deposited:")}   ${total.toString()}`);
-      console.log(`  ${chalk.bold("Expiration:")}  ${expirationLine}`);
-
-      if (opts.address) {
-        const claimed = await client.isClaimed(opts.address);
-        console.log(
-          `\n  ${chalk.bold(opts.address)}: ${
-            claimed ? chalk.yellow("already claimed") : chalk.green("not yet claimed")
-          }`
-        );
-      }
-      console.log();
-    } catch (err) {
-      spinner.fail(`Error: ${(err as Error).message}`);
-      process.exit(1);
-    }
+    await runStatusAction(opts, globalOpts);
   });
