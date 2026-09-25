@@ -104,6 +104,10 @@ export function makeGenerateCommand(): Command {
     .description("Build a Merkle tree from a CSV airdrop list")
     .requiredOption("-i, --input <file>", "CSV file: address,amount (one per line)")
     .requiredOption("-o, --output <file>", "Output JSON file for Merkle tree + proofs")
+    .requiredOption(
+      "-c, --contract-id <address>",
+      "Deployed airdrop contract address (C...) — included as domain separator in leaf hashes"
+    )
     .option("--has-header", "Force-skip the first data row as a CSV header")
     .option("--json", "Print tree JSON to stdout instead of writing to --output (suppresses spinner)")
     .action(async (opts) => {
@@ -171,7 +175,7 @@ export function makeGenerateCommand(): Command {
         }
 
         (spinner as { text: string }).text = `Building Merkle tree for ${entries.length} entries...`;
-        const { root, proofs } = buildMerkleTree(entries);
+        const { root, proofs } = buildMerkleTree(opts.contractId as string, entries);
 
         const output = {
           root,

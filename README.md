@@ -195,21 +195,25 @@ Global options:
 
 ## How the Merkle Proof Works
 
-**Leaf hash:** `SHA-256( SHA-256(address_as_utf8_strkey_bytes) ++ amount_big_endian[16] )`
+**Leaf hash:** `SHA-256( SHA-256(contract_strkey_utf8_bytes) ++ SHA-256(address_strkey_utf8_bytes) ++ amount_big_endian[16] )`
 
-The address is first hashed as the UTF-8 bytes of its Stellar strkey string
-(e.g. `GABC...` for accounts, `CABC...` for contracts) to produce a stable
-32-byte value. That hash is then concatenated with the 16-byte big-endian
-encoding of the amount and SHA-256'd again to produce the leaf. The double-hash
-is necessary because Soroban's `Address` type does not expose the raw public-key
-bytes directly in contract code — hashing the strkey string is the stable,
-canonical substitute used by both the Rust contract and the TypeScript SDK.
+The contract address is SHA-256 hashed from its Stellar strkey string (`C...`) and
+prepended to the leaf pre-image as a **domain separator**. This prevents a valid
+proof from one contract deployment being replayed against a second deployment that
+uses the same Merkle root (see [docs/replay-attack-analysis.md](docs/replay-attack-analysis.md)).
+
+The claimant address is then SHA-256 hashed from its Stellar strkey string
+(e.g. `GABC...` for accounts, `CABC...` for contracts). Both hashes are concatenated
+with the 16-byte big-endian encoding of the amount and SHA-256'd again to produce
+the leaf. The double-hash is necessary because Soroban's `Address` type does not
+expose the raw public-key bytes directly in contract code.
 
 **Node hash:** `SHA-256(min(left, right) ++ max(left, right))` — sorted so the tree is position-independent.
 
 This means:
 - The same distribution produces the same root regardless of list order
 - Proofs are compact: O(log n) hashes for n recipients
+- A proof is cryptographically bound to the specific contract it was built for
 - The TypeScript builder and Rust verifier use identical algorithms
 
 ## Contributing

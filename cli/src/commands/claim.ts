@@ -45,7 +45,7 @@ export const claimCommand = new Command("claim")
       const proof = { ...entry, amount: BigInt(entry.amount) };
 
       spinner.text = "Verifying proof locally...";
-      const valid = verifyProof(raw.root, proof.address, proof.amount, proof.proof);
+      const valid = verifyProof(raw.root, contractId, proof.address, proof.amount, proof.proof);
       if (!valid) {
         spinner.fail(chalk.red("Proof verification failed — tree may be corrupted"));
         process.exit(1);

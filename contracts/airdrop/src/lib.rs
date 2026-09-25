@@ -596,7 +596,7 @@ fn claim_entry(
         .get(&DataKey::MerkleRoot)
         .ok_or(AirdropError::NotInitialized)?;
 
-    let leaf = merkle::leaf_hash(env, claimant, amount);
+    let leaf = merkle::leaf_hash(env, &env.current_contract_address(), claimant, amount);
 
     if !merkle::verify_proof(env, &root, leaf, proof) {
         return Err(AirdropError::InvalidProof);
