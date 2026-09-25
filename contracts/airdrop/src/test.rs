@@ -1172,3 +1172,97 @@ fn hex_to_array_32(hex: &str) -> [u8; 32] {
     }
     out
 }
+
+// ─── Issue #37: claim_for ──────────────────────────────────────────────────
+
+/// Operator calls claim_for; tokens land in the claimant's wallet, not the
+/// operator's.
+#[test]
+fn test_claim_for_success_tokens_go_to_claimant() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    let claimant_balance_before = TokenClient::new(&env, &token).balance(&claimant);
+
+    // Operator submits the transaction — claimant does NOT sign.
+    client.claim_for(&claimant, &1000, &proof);
+
+    // Tokens must arrive in claimant's account.
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&claimant),
+        claimant_balance_before + 1000,
+        "claimant must receive 1000 tokens"
+    );
+    // Claimed flag must be set.
+    assert!(client.is_claimed(&claimant));
+}
+
+/// Double-claim via claim_for must fail with AlreadyClaimed.
+#[test]
+fn test_claim_for_double_claim_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    client.claim_for(&claimant, &1000, &proof);
+
+    let result = client.try_claim_for(&claimant, &1000, &proof);
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::AlreadyClaimed)),
+        "second claim_for must fail with AlreadyClaimed"
+    );
+}
+
+/// claim_for with an invalid proof must fail.
+#[test]
+fn test_claim_for_invalid_proof_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let other = Address::generate(&env);
+
+    let (root, _, proof_other) = build_two_leaf_tree(&env, &claimant, 1000, &other, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    // Submit other's proof for claimant — must be rejected.
+    let result = client.try_claim_for(&claimant, &500, &proof_other);
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::InvalidProof)),
+        "claim_for with wrong proof must fail"
+    );
+}
+
+/// Regular claim followed by claim_for for the same address must fail.
+#[test]
+fn test_claim_then_claim_for_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    // First claim the normal way.
+    client.claim(&claimant, &1000, &proof);
+
+    // Then try claim_for for the same claimant — must fail.
+    let result = client.try_claim_for(&claimant, &1000, &proof);
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::AlreadyClaimed)),
+        "claim_for must fail after regular claim for the same address"
+    );
+}
