@@ -269,3 +269,175 @@ describe("status command — runStatusAction", () => {
     );
   });
 });
+
+// ─── Issue #68: --rpc-url forwarding ────────────────────────────────────────
+
+describe("status command — Issue #68: --rpc-url forwarding", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockClient.isActive.mockResolvedValue(true);
+    mockClient.merkleRoot.mockResolvedValue(MERKLE_ROOT);
+    mockClient.totalDeposited.mockResolvedValue(0n);
+    mockClient.expiration.mockResolvedValue(null);
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  afterEach(() => {
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  it("passes a custom --rpc-url to createAirdropClient instead of the preset", async () => {
+    const { createAirdropClient } = await import("@soroban-merkle-airdrop/sdk");
+    const customRpcUrl = "https://my-custom-rpc.example.com";
+
+    await run(
+      {},
+      { contractId: CONTRACT_ID, network: "testnet", rpcUrl: customRpcUrl }
+    );
+
+    expect(createAirdropClient).toHaveBeenCalledWith(
+      expect.objectContaining({ rpcUrl: customRpcUrl })
+    );
+  });
+
+  it("uses the preset rpcUrl when --rpc-url is not provided", async () => {
+    const { createAirdropClient } = await import("@soroban-merkle-airdrop/sdk");
+
+    await run({}, { contractId: CONTRACT_ID, network: "testnet" });
+
+    expect(createAirdropClient).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rpcUrl: "https://soroban-testnet.stellar.org",
+      })
+    );
+  });
+
+  it("does not include rpcUrl override when globalOpts.rpcUrl is undefined", async () => {
+    const { createAirdropClient } = await import("@soroban-merkle-airdrop/sdk");
+
+    await run({}, { contractId: CONTRACT_ID });
+
+    // The call should still succeed and use the network preset rpcUrl
+    expect(createAirdropClient).toHaveBeenCalled();
+    const callArg = (createAirdropClient as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as Record<string, unknown>;
+    // Should NOT be undefined — it comes from the preset
+    expect(typeof callArg["rpcUrl"]).toBe("string");
+  });
+});
+
+// ─── Issue #67: --json output flag ───────────────────────────────────────────
+
+describe("status command — Issue #67: --json output flag", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockClient.isActive.mockResolvedValue(true);
+    mockClient.merkleRoot.mockResolvedValue(MERKLE_ROOT);
+    mockClient.totalDeposited.mockResolvedValue(15000n);
+    mockClient.expiration.mockResolvedValue(9999999999n);
+    mockClient.isClaimed.mockResolvedValue(false);
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  afterEach(() => {
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  it("outputs valid JSON when --json is set", async () => {
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID, network: "testnet" }
+    );
+
+    // There should be exactly one line of JSON output
+    const jsonLine = lines.find((l) => l.trimStart().startsWith("{"));
+    expect(jsonLine).toBeDefined();
+    expect(() => JSON.parse(jsonLine!)).not.toThrow();
+  });
+
+  it("JSON output contains all required keys", async () => {
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID, network: "testnet" }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+
+    expect(parsed).toHaveProperty("contractId", CONTRACT_ID);
+    expect(parsed).toHaveProperty("network", "testnet");
+    expect(parsed).toHaveProperty("active");
+    expect(parsed).toHaveProperty("root");
+    expect(parsed).toHaveProperty("deposited");
+    expect(parsed).toHaveProperty("expiration");
+  });
+
+  it("JSON active field is boolean true when contract is active", async () => {
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.active).toBe(true);
+  });
+
+  it("JSON active field is boolean false when contract is inactive", async () => {
+    mockClient.isActive.mockResolvedValue(false);
+
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.active).toBe(false);
+  });
+
+  it("JSON root is null when contract is not initialized", async () => {
+    mockClient.merkleRoot.mockResolvedValue(null);
+
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.root).toBeNull();
+  });
+
+  it("JSON expiration is null when not set", async () => {
+    mockClient.expiration.mockResolvedValue(null);
+
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.expiration).toBeNull();
+  });
+
+  it("JSON includes address and claimed fields when --address is provided", async () => {
+    mockClient.isClaimed.mockResolvedValue(true);
+
+    const { lines } = await run(
+      { json: true, address: TEST_ADDRESS },
+      { contractId: CONTRACT_ID }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.address).toBe(TEST_ADDRESS);
+    expect(parsed.claimed).toBe(true);
+  });
+
+  it("does not include address/claimed keys when no --address is provided", async () => {
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed).not.toHaveProperty("address");
+    expect(parsed).not.toHaveProperty("claimed");
+  });
+});
