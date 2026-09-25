@@ -13,6 +13,7 @@ import { RpcError } from "./types.js";
 
 // We mock the entire stellar-sdk module so no real network calls are made.
 vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
   const actual = await importOriginal<typeof import("@stellar/stellar-sdk")>();
 
   // Stub that records calls and returns controllable values.

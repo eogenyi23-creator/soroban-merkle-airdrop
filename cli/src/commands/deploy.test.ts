@@ -4,36 +4,50 @@
  * All Stellar RPC calls are mocked — no real network access occurs.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { programmaticDeploy, type DeployOptions } from "./deploy.js";
+
+// ─── Hoisted mocks ───────────────────────────────────────────────────────────
+// vi.mock() factories are hoisted before module-level code, so any variables
+// they reference must also be hoisted via vi.hoisted().
+
+const mockServer = vi.hoisted(() => ({
+  getAccount: vi.fn(),
+  simulateTransaction: vi.fn(),
+  sendTransaction: vi.fn(),
+  getTransaction: vi.fn(),
+}));
+
+// Hoisted mock for xdr.TransactionMeta.fromXDR — allows per-test configuration.
+const mockFromXDR = vi.hoisted(() => vi.fn());
+
+// Hoisted mock for readFile — allows per-test configuration.
+const mockReadFile = vi.hoisted(() =>
+  vi.fn().mockImplementation((path: unknown) => {
+    if (String(path).endsWith(".wasm")) {
+      return Promise.resolve(Buffer.from([0x00, 0x61, 0x73, 0x6d]));
+    }
+    return Promise.resolve(
+      JSON.stringify({
+        root: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        totalAmount: "150000",
+        proofs: {},
+      })
+    );
+  })
+);
 
 // ─── Mock @stellar/stellar-sdk ──────────────────────────────────────────────
 
-// We capture the mock server so individual tests can configure return values.
-let mockServer: {
-  getAccount: ReturnType<typeof vi.fn>;
-  simulateTransaction: ReturnType<typeof vi.fn>;
-  sendTransaction: ReturnType<typeof vi.fn>;
-  getTransaction: ReturnType<typeof vi.fn>;
-};
-
 vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
   const actual = await importOriginal<typeof import("@stellar/stellar-sdk")>();
-
-  mockServer = {
-    getAccount: vi.fn(),
-    simulateTransaction: vi.fn(),
-    sendTransaction: vi.fn(),
-    getTransaction: vi.fn(),
-  };
-
-  const MockServer = vi.fn(() => mockServer);
 
   return {
     ...actual,
     rpc: {
       ...actual.rpc,
-      Server: MockServer,
+      Server: vi.fn(() => mockServer),
       assembleTransaction: vi.fn().mockReturnValue({
         build: vi.fn().mockReturnValue({ sign: vi.fn(), toXDR: vi.fn() }),
       }),
@@ -64,28 +78,27 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
     Contract: vi.fn().mockImplementation(() => ({
       call: vi.fn().mockReturnValue({}),
     })),
-    Address: vi.fn().mockImplementation((addr: string) => ({
-      toScVal: vi.fn().mockReturnValue({}),
-      toString: () => addr,
-    })),
+    Address: Object.assign(
+      vi.fn().mockImplementation((addr: string) => ({
+        toScVal: vi.fn().mockReturnValue({}),
+        toString: () => addr,
+      })),
+      {
+        // Static method used by extractContractIdFromResult
+        contract: vi.fn().mockReturnValue({ toString: () => "CCONTRACT123DEPLOY456" }),
+      }
+    ),
     xdr: {
       ...actual.xdr,
       ScVal: {
+        ...actual.xdr.ScVal,
         scvBytes: vi.fn().mockReturnValue({}),
       },
       TransactionMeta: {
-        fromXDR: vi.fn().mockReturnValue({
-          v3: vi.fn().mockReturnValue({
-            sorobanMeta: vi.fn().mockReturnValue({
-              returnValue: vi.fn().mockReturnValue({
-                switch: vi.fn().mockReturnValue({ name: "scvBytes" }),
-                bytes: vi.fn().mockReturnValue(Buffer.alloc(32, 0xab)),
-              }),
-            }),
-          }),
-        }),
+        fromXDR: mockFromXDR,
       },
-      ScValType: actual.xdr?.ScValType ?? {},
+      ScValType: actual.xdr.ScValType,
+      ScAddressType: actual.xdr.ScAddressType,
     },
     nativeToScVal: vi.fn().mockReturnValue({}),
     Networks: actual.Networks,
@@ -94,24 +107,50 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
 
 // ─── Mock fs/promises ────────────────────────────────────────────────────────
 
-vi.mock("fs/promises", () => ({
-  readFile: vi.fn().mockImplementation((path: string) => {
-    // Return fake WASM bytes for .wasm files
-    if (String(path).endsWith(".wasm")) {
-      return Promise.resolve(Buffer.from([0x00, 0x61, 0x73, 0x6d])); // WASM magic bytes
-    }
-    // Return a mock Merkle tree JSON for .json files
-    return Promise.resolve(
-      JSON.stringify({
-        root: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-        totalAmount: "150000",
-        proofs: {},
-      })
-    );
-  }),
-}));
+vi.mock("fs/promises", () => ({ readFile: mockReadFile }));
 
-// ─── Test helpers ────────────────────────────────────────────────────────────
+// ─── XDR helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Build a fake TransactionMeta result for the WASM upload step.
+ * extractReturnValue expects scvBytes switch.
+ */
+async function makeUploadXdrResult() {
+  const { xdr } = await import("@stellar/stellar-sdk");
+  return {
+    v3: vi.fn().mockReturnValue({
+      sorobanMeta: vi.fn().mockReturnValue({
+        returnValue: vi.fn().mockReturnValue({
+          switch: vi.fn().mockReturnValue(xdr.ScValType.scvBytes()),
+          bytes: vi.fn().mockReturnValue(Buffer.alloc(32, 0xab)),
+        }),
+      }),
+    }),
+  };
+}
+
+/**
+ * Build a fake TransactionMeta result for the contract deploy step.
+ * extractContractIdFromResult expects scvAddress/scAddressTypeContract.
+ */
+async function makeDeployXdrResult() {
+  const { xdr } = await import("@stellar/stellar-sdk");
+  return {
+    v3: vi.fn().mockReturnValue({
+      sorobanMeta: vi.fn().mockReturnValue({
+        returnValue: vi.fn().mockReturnValue({
+          switch: vi.fn().mockReturnValue(xdr.ScValType.scvAddress()),
+          address: vi.fn().mockReturnValue({
+            switch: vi.fn().mockReturnValue(xdr.ScAddressType.scAddressTypeContract()),
+            contractId: vi.fn().mockReturnValue(Buffer.alloc(32, 0xcd)),
+          }),
+        }),
+      }),
+    }),
+  };
+}
+
+// ─── Test helpers ─────────────────────────────────────────────────────────────
 
 const BASE_OPTS: DeployOptions = {
   wasm: "contract.wasm",
@@ -122,163 +161,177 @@ const BASE_OPTS: DeployOptions = {
   network: "testnet",
 };
 
-/** Build a successful simResult (no 'error' key). */
 function simSuccess() {
-  return {
-    result: { retval: {} },
-    transactionData: {},
-    minResourceFee: "100",
-  };
+  return { result: { retval: {} }, transactionData: {}, minResourceFee: "100" };
 }
 
-/** Build a fake successful GetTransaction response. */
-function txSuccess(returnValueOverride?: object) {
+function txSuccessResult() {
   return {
     status: "SUCCESS" as const,
-    resultMetaXdr: {
-      toXDR: () => Buffer.alloc(0),
-    },
-    // Store override so we can use it in extractReturnValue
-    _returnValue: returnValueOverride,
+    resultMetaXdr: { toXDR: () => Buffer.alloc(0) },
   };
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("programmaticDeploy (Issue #69)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
 
-    // Default happy-path responses
+    mockReadFile.mockImplementation((path: unknown) => {
+      if (String(path).endsWith(".wasm")) {
+        return Promise.resolve(Buffer.from([0x00, 0x61, 0x73, 0x6d]));
+      }
+      return Promise.resolve(
+        JSON.stringify({
+          root: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+          totalAmount: "150000",
+          proofs: {},
+        })
+      );
+    });
+
     mockServer.getAccount.mockResolvedValue({
       id: "GADMIN123PUBLICKEY",
       sequenceNumber: () => "100",
       incrementSequenceNumber: vi.fn(),
     });
-    mockServer.simulateTransaction.mockResolvedValue(simSuccess());
-    mockServer.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "txhash123" });
-    mockServer.getTransaction.mockResolvedValue(txSuccess());
+
+    // Use mockImplementation so the queue cannot bleed between tests.
+    mockServer.simulateTransaction.mockImplementation(() =>
+      Promise.resolve(simSuccess())
+    );
+
+    let sendCallCount = 0;
+    const sendHashes = ["upload-hash", "deploy-hash", "init-hash"];
+    mockServer.sendTransaction.mockImplementation(() => {
+      const hash = sendHashes[sendCallCount++] ?? "extra-hash";
+      return Promise.resolve({ status: "PENDING", hash });
+    });
+
+    mockServer.getTransaction.mockResolvedValue(txSuccessResult());
+
+    // Set up fromXDR via implementation so it can't be exhausted by a prior test.
+    const uploadXdr = await makeUploadXdrResult();
+    const deployXdr = await makeDeployXdrResult();
+    let xdrCallCount = 0;
+    mockFromXDR.mockImplementation(() => {
+      xdrCallCount++;
+      return xdrCallCount === 1 ? uploadXdr : deployXdr;
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("calls getAccount, simulateTransaction, and sendTransaction for each of the 3 steps", async () => {
-    // Each step (upload, deploy, init) calls: getAccount(×2 refreshes), simulateTransaction, sendTransaction.
-    // getTransaction is called once per step after sendTransaction.
-    mockServer.sendTransaction
-      .mockResolvedValueOnce({ status: "PENDING", hash: "upload-hash" })
-      .mockResolvedValueOnce({ status: "PENDING", hash: "deploy-hash" })
-      .mockResolvedValueOnce({ status: "PENDING", hash: "init-hash" });
+    const deployPromise = programmaticDeploy(BASE_OPTS);
+    // Advance through all polling sleeps (3 polls × 2s each)
+    await vi.runAllTimersAsync();
+    await deployPromise;
 
-    // getTransaction resolves SUCCESS for each hash
-    mockServer.getTransaction.mockResolvedValue(txSuccess());
-
-    await programmaticDeploy(BASE_OPTS);
-
-    // simulateTransaction called 3 times (upload + deploy + init)
     expect(mockServer.simulateTransaction).toHaveBeenCalledTimes(3);
-    // sendTransaction called 3 times
     expect(mockServer.sendTransaction).toHaveBeenCalledTimes(3);
   });
 
   it("throws if WASM upload simulation returns an error", async () => {
-    mockServer.simulateTransaction.mockResolvedValueOnce({
-      error: "Simulation error: out of budget",
-    });
-
-    await expect(programmaticDeploy(BASE_OPTS)).rejects.toThrow(
-      /WASM upload simulation failed/
+    // Override: first sim call returns error (upload fails)
+    mockServer.simulateTransaction.mockImplementationOnce(() =>
+      Promise.resolve({ error: "Simulation error: out of budget" })
     );
+
+    const deployPromise = programmaticDeploy(BASE_OPTS);
+    await vi.runAllTimersAsync();
+
+    await expect(deployPromise).rejects.toThrow(/WASM upload simulation failed/);
   });
 
   it("throws if contract deploy simulation returns an error", async () => {
-    // First simulation (upload) succeeds, second (deploy) fails
-    mockServer.simulateTransaction
-      .mockResolvedValueOnce(simSuccess())
-      .mockResolvedValueOnce({ error: "Deploy simulation error" });
+    let simCall = 0;
+    mockServer.simulateTransaction.mockImplementation(() => {
+      simCall++;
+      if (simCall === 2) return Promise.resolve({ error: "Deploy simulation error" });
+      return Promise.resolve(simSuccess());
+    });
 
-    await expect(programmaticDeploy(BASE_OPTS)).rejects.toThrow(
-      /Contract deploy simulation failed/
-    );
+    const deployPromise = programmaticDeploy(BASE_OPTS);
+    await vi.runAllTimersAsync();
+
+    await expect(deployPromise).rejects.toThrow(/Contract deploy simulation failed/);
   });
 
   it("throws if initialize simulation returns an error", async () => {
-    mockServer.simulateTransaction
-      .mockResolvedValueOnce(simSuccess())   // upload
-      .mockResolvedValueOnce(simSuccess())   // deploy
-      .mockResolvedValueOnce({ error: "Init simulation error" }); // init
+    let simCall = 0;
+    mockServer.simulateTransaction.mockImplementation(() => {
+      simCall++;
+      if (simCall === 3) return Promise.resolve({ error: "Init simulation error" });
+      return Promise.resolve(simSuccess());
+    });
 
-    await expect(programmaticDeploy(BASE_OPTS)).rejects.toThrow(
-      /Initialize simulation failed/
-    );
+    const deployPromise = programmaticDeploy(BASE_OPTS);
+    await vi.runAllTimersAsync();
+
+    await expect(deployPromise).rejects.toThrow(/Initialize simulation failed/);
   });
 
   it("throws if upload sendTransaction returns ERROR status", async () => {
-    mockServer.sendTransaction.mockResolvedValueOnce({
-      status: "ERROR",
-      errorResult: { toXDR: () => "errorXDR" },
-    });
-
-    await expect(programmaticDeploy(BASE_OPTS)).rejects.toThrow(
-      /WASM upload transaction failed/
+    mockServer.sendTransaction.mockImplementation(() =>
+      Promise.resolve({ status: "ERROR", errorResult: { toXDR: () => "errorXDR" } })
     );
+
+    const deployPromise = programmaticDeploy(BASE_OPTS);
+    await vi.runAllTimersAsync();
+
+    await expect(deployPromise).rejects.toThrow(/WASM upload transaction failed/);
   });
 
   it("throws if deploy sendTransaction returns ERROR status", async () => {
-    mockServer.sendTransaction
-      .mockResolvedValueOnce({ status: "PENDING", hash: "upload-hash" }) // upload ok
-      .mockResolvedValueOnce({ status: "ERROR", errorResult: { toXDR: () => "err" } }); // deploy fails
+    let sendCall = 0;
+    mockServer.sendTransaction.mockImplementation(() => {
+      sendCall++;
+      if (sendCall === 1) return Promise.resolve({ status: "PENDING", hash: "upload-hash" });
+      return Promise.resolve({ status: "ERROR", errorResult: { toXDR: () => "err" } });
+    });
 
-    await expect(programmaticDeploy(BASE_OPTS)).rejects.toThrow(
-      /Contract deploy transaction failed/
-    );
+    const deployPromise = programmaticDeploy(BASE_OPTS);
+    await vi.runAllTimersAsync();
+
+    await expect(deployPromise).rejects.toThrow(/Contract deploy transaction failed/);
   });
 
   it("throws a timeout error if getTransaction never returns SUCCESS", async () => {
-    // Override the polling timeout via a short value — we'll test the flow
-    // by making getTransaction always return NOT_FOUND.
     mockServer.getTransaction.mockResolvedValue({ status: "NOT_FOUND" });
 
-    // The actual timeout is 90s which is too long for a unit test,
-    // so we mock Date.now to advance time artificially.
-    const realDateNow = Date.now;
-    let callCount = 0;
-    vi.spyOn(Date, "now").mockImplementation(() => {
-      // After 5 calls, jump past the 90s timeout
-      callCount++;
-      return callCount > 5 ? realDateNow() + 100_000 : realDateNow();
-    });
+    const deployPromise = programmaticDeploy(BASE_OPTS);
+    // Advance time past the 90s POLL_TIMEOUT_MS
+    await vi.advanceTimersByTimeAsync(200_000);
 
-    try {
-      await expect(programmaticDeploy(BASE_OPTS)).rejects.toThrow(
-        /Transaction confirmation timeout/
-      );
-    } finally {
-      vi.restoreAllMocks();
-    }
-  }, 30_000);
+    await expect(deployPromise).rejects.toThrow(/Transaction confirmation timeout/);
+  });
 
   it("rejects if Merkle tree JSON has no root field", async () => {
-    const { readFile } = await import("fs/promises");
-    vi.mocked(readFile).mockImplementationOnce((path) => {
+    mockReadFile.mockImplementation((path: unknown) => {
       if (String(path).endsWith(".wasm")) return Promise.resolve(Buffer.from([0x00]));
-      return Promise.resolve(JSON.stringify({ totalAmount: "1000" })); // missing root
+      return Promise.resolve(JSON.stringify({ totalAmount: "1000" }));
     });
 
-    await expect(programmaticDeploy(BASE_OPTS)).rejects.toThrow(
-      /missing a 'root' field/
-    );
+    const deployPromise = programmaticDeploy(BASE_OPTS);
+    await vi.runAllTimersAsync();
+
+    await expect(deployPromise).rejects.toThrow(/missing a 'root' field/);
   });
 
   it("rejects if Merkle tree JSON has no totalAmount field", async () => {
-    const { readFile } = await import("fs/promises");
-    vi.mocked(readFile).mockImplementationOnce((path) => {
+    mockReadFile.mockImplementation((path: unknown) => {
       if (String(path).endsWith(".wasm")) return Promise.resolve(Buffer.from([0x00]));
-      return Promise.resolve(
-        JSON.stringify({ root: "abc123".repeat(10).slice(0, 64) })
-      ); // missing totalAmount
+      return Promise.resolve(JSON.stringify({ root: "a".repeat(64) }));
     });
 
-    await expect(programmaticDeploy(BASE_OPTS)).rejects.toThrow(
-      /missing 'totalAmount'/
-    );
+    const deployPromise = programmaticDeploy(BASE_OPTS);
+    await vi.runAllTimersAsync();
+
+    await expect(deployPromise).rejects.toThrow(/missing 'totalAmount'/);
   });
 });

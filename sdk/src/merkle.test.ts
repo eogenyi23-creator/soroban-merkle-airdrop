@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { buildMerkleTree, verifyProof, leafHash } from "../src/merkle.js";
-import { AirdropContractError, RpcError, AirdropError } from "../src/types.js";
 
 const ADDR_1 = "GBTL47RTFR5EKMZSXWOQU735WBK7LRPPDIDK3JTNTCZZ7NUBBRDTVSK2";
 const ADDR_2 = "GBIRYNFBULFVEHPRNOZENOG6RZ4ZPTRDLR7HNMRKHV2QHISIDHOYV6ZN";
@@ -102,7 +101,7 @@ describe("buildMerkleTree", () => {
 
   it("large list: all entries verify", () => {
     // Generate 100 fake entries using deterministic addresses
-    const entries = Array.from({ length: 20 }, (_, i) => ({
+    const _entries = Array.from({ length: 20 }, (_, i) => ({
       address: i % 2 === 0 ? ADDR_1.replace("A", String(i).padStart(1, "0")) : ADDR_2,
       amount: BigInt(i + 1) * 100n,
     }));
