@@ -1172,3 +1172,217 @@ fn hex_to_array_32(hex: &str) -> [u8; 32] {
     }
     out
 }
+
+// ─── Issue #45: update_merkle_root ─────────────────────────────────────────
+
+/// Happy path: admin rotates the root with a larger new_total. The extra
+/// tokens are pulled from the admin, the old-root proof fails, and a
+/// new-root proof succeeds.
+#[test]
+fn test_update_merkle_root_success() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let new_recipient = Address::generate(&env);
+
+    // Original tree: claimant→1000, admin→500.
+    let (old_root, old_proof_claimant, _) =
+        build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 3000); // init(1500) + top-up(1000)
+    client.initialize(&admin, &token, &old_root, &1500, &DEFAULT_EXPIRATION);
+
+    // New tree: claimant→2000, new_recipient→500 — different root.
+    let (new_root, new_proof_claimant, _) =
+        build_two_leaf_tree(&env, &claimant, 2000, &new_recipient, 500);
+
+    // Rotate root; new_total(2500) > current_total(1500) → pulls 1000 from admin.
+    client.update_merkle_root(&new_root, &2500);
+
+    // Root on-chain must be updated.
+    assert_eq!(client.merkle_root(), Some(new_root.clone()));
+    assert_eq!(client.total_deposited(), 2500);
+
+    // The event ("root_upd", admin) must have been emitted.
+    let events = env.events().all();
+    let found = events.iter().any(|(_contract, topics, _data)| {
+        use soroban_sdk::IntoVal;
+        *topics == (symbol_short!("root_upd"), admin.clone()).into_val(&env)
+    });
+    assert!(found, "update_merkle_root must emit ('root_upd', admin) event");
+
+    // Old-root-only proof must now fail (the root has changed).
+    let result = client.try_claim(&claimant, &1000, &old_proof_claimant);
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::InvalidProof)),
+        "old-root claim must fail after root rotation"
+    );
+
+    // New-root proof must succeed.
+    client.claim(&claimant, &2000, &new_proof_claimant);
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&claimant),
+        2000,
+        "claimant must receive 2000 tokens under the new root"
+    );
+}
+
+/// update_merkle_root with new_total == current_total must NOT transfer
+/// any tokens from admin.
+#[test]
+fn test_update_merkle_root_same_total_no_transfer() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (old_root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &old_root, &1500, &DEFAULT_EXPIRATION);
+
+    let admin_balance_before = TokenClient::new(&env, &token).balance(&admin);
+
+    // Same total — no top-up transfer should happen.
+    let (new_root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    client.update_merkle_root(&new_root, &1500);
+
+    let admin_balance_after = TokenClient::new(&env, &token).balance(&admin);
+    assert_eq!(
+        admin_balance_before, admin_balance_after,
+        "no tokens should be transferred when new_total == current_total"
+    );
+}
+
+/// Non-admin calling update_merkle_root must panic (auth failure).
+#[test]
+#[should_panic]
+fn test_update_merkle_root_non_admin_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    let (new_root, _, _) = build_two_leaf_tree(&env, &claimant, 999, &admin, 1);
+    env.set_auths(&[MockAuth {
+        address: &non_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "update_merkle_root",
+            args: (new_root.clone(), 1000_i128).into_val(&env),
+            sub_invokes: &[],
+        },
+    }
+    .into()]);
+
+    client.update_merkle_root(&new_root, &1000);
+}
+
+/// update_merkle_root on uninitialized contract returns NotInitialized.
+#[test]
+fn test_update_merkle_root_uninitialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AirdropContract, ());
+    let client = AirdropContractClient::new(&env, &contract_id);
+
+    let fake_root = BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_update_merkle_root(&fake_root, &1000);
+    assert_eq!(result, Err(Ok(AirdropError::NotInitialized)));
+}
+
+// ─── Issue #37: claim_for ──────────────────────────────────────────────────
+
+/// Operator calls claim_for; tokens land in the claimant's wallet, not the
+/// operator's.
+#[test]
+fn test_claim_for_success_tokens_go_to_claimant() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    let claimant_balance_before = TokenClient::new(&env, &token).balance(&claimant);
+
+    // Operator submits the transaction — claimant does NOT sign.
+    client.claim_for(&claimant, &1000, &proof);
+
+    // Tokens must arrive in claimant's account.
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&claimant),
+        claimant_balance_before + 1000,
+        "claimant must receive 1000 tokens"
+    );
+    // Claimed flag must be set.
+    assert!(client.is_claimed(&claimant));
+}
+
+/// Double-claim via claim_for must fail with AlreadyClaimed.
+#[test]
+fn test_claim_for_double_claim_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    client.claim_for(&claimant, &1000, &proof);
+
+    let result = client.try_claim_for(&claimant, &1000, &proof);
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::AlreadyClaimed)),
+        "second claim_for must fail with AlreadyClaimed"
+    );
+}
+
+/// claim_for with an invalid proof must fail.
+#[test]
+fn test_claim_for_invalid_proof_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let other = Address::generate(&env);
+
+    let (root, _, proof_other) = build_two_leaf_tree(&env, &claimant, 1000, &other, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    // Submit other's proof for claimant — must be rejected.
+    let result = client.try_claim_for(&claimant, &500, &proof_other);
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::InvalidProof)),
+        "claim_for with wrong proof must fail"
+    );
+}
+
+/// Regular claim followed by claim_for for the same address must fail.
+#[test]
+fn test_claim_then_claim_for_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    // First claim the normal way.
+    client.claim(&claimant, &1000, &proof);
+
+    // Then try claim_for for the same claimant — must fail.
+    let result = client.try_claim_for(&claimant, &1000, &proof);
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::AlreadyClaimed)),
+        "claim_for must fail after regular claim for the same address"
+    );
+}
