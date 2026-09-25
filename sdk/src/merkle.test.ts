@@ -95,6 +95,79 @@ describe("buildMerkleTree", () => {
     ).toThrow("Duplicate address");
   });
 
+  // ── Issue #34: Edge cases ────────────────────────────────────────────────
+
+  /**
+   * Stellar addresses are case-sensitive. The same base-32 characters in
+   * different capitalizations must be treated as two distinct entries —
+   * the duplicate guard and the leaf hash both operate on the raw string,
+   * so case must be preserved and never folded.
+   *
+   * In practice all valid Stellar strkeys are uppercase, but the SDK must
+   * not silently normalise input and discard a legitimate entry.
+   */
+  it("#34: different capitalisation is treated as a different address (case-sensitive)", () => {
+    // Lowercase version of ADDR_1 — a different string, so a different entry.
+    const ADDR_1_LOWER = ADDR_1.toLowerCase();
+
+    const { root, proofs } = buildMerkleTree([
+      { address: ADDR_1, amount: 1000n },
+      { address: ADDR_1_LOWER, amount: 500n },
+    ]);
+
+    // Both entries must have their own proof entry.
+    expect(proofs.has(ADDR_1)).toBe(true);
+    expect(proofs.has(ADDR_1_LOWER)).toBe(true);
+
+    // Each proof must verify against the root.
+    const p1 = proofs.get(ADDR_1)!;
+    const p2 = proofs.get(ADDR_1_LOWER)!;
+    expect(verifyProof(root, ADDR_1, 1000n, p1.proof)).toBe(true);
+    expect(verifyProof(root, ADDR_1_LOWER, 500n, p2.proof)).toBe(true);
+
+    // The leaf hashes must differ, confirming the case difference is meaningful.
+    expect(leafHash(ADDR_1, 1000n).toString("hex")).not.toBe(
+      leafHash(ADDR_1_LOWER, 500n).toString("hex")
+    );
+  });
+
+  /**
+   * Single-entry tree: the root is exactly the leaf hash, and the proof is
+   * empty. verifyProof must confirm this without any sibling hashes.
+   */
+  it("#34: single-entry tree — root equals leaf hash, proof is empty, verifyProof returns true", () => {
+    const { root, proofs } = buildMerkleTree([
+      { address: ADDR_1, amount: 1000n },
+    ]);
+
+    // Root must equal the leaf hash.
+    const expected = leafHash(ADDR_1, 1000n).toString("hex");
+    expect(root).toBe(expected);
+
+    // The proof array must be empty (no siblings in a one-node tree).
+    const p = proofs.get(ADDR_1)!;
+    expect(p.proof).toEqual([]);
+
+    // verifyProof must return true for an empty proof when root == leaf.
+    expect(verifyProof(root, ADDR_1, 1000n, [])).toBe(true);
+  });
+
+  /**
+   * A list containing the same address string twice but with different
+   * capitalisation must NOT throw a "Duplicate address" error, because the
+   * addresses are different strings and the duplicate check is case-sensitive.
+   */
+  it("#34: same base-32 chars, different case — does NOT throw", () => {
+    const ADDR_1_LOWER = ADDR_1.toLowerCase();
+
+    expect(() =>
+      buildMerkleTree([
+        { address: ADDR_1, amount: 1000n },
+        { address: ADDR_1_LOWER, amount: 500n },
+      ])
+    ).not.toThrow();
+  });
+
   it("rejects empty list", () => {
     expect(() => buildMerkleTree([])).toThrow("empty");
   });
