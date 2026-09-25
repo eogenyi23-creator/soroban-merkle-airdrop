@@ -247,6 +247,82 @@ impl AirdropContract {
         Ok(())
     }
 
+    /// Rotate the Merkle root and optionally top up the deposited amount.
+    ///
+    /// Replaces the on-chain Merkle root with `new_root` and sets
+    /// `TotalDeposited` to `new_total`. If `new_total` exceeds the current
+    /// `TotalDeposited` value the difference is transferred from the admin
+    /// into the contract immediately; if it is equal or smaller no transfer
+    /// is made (the organiser is responsible for ensuring the contract holds
+    /// sufficient funds for all new claims).
+    ///
+    /// # ⚠ Warning
+    ///
+    /// **Existing claimed flags are NOT reset.** Any address that already
+    /// claimed under the old root cannot claim again — even if they appear
+    /// in the new tree with a different amount. This is intentional: it
+    /// prevents double-spending when correcting errors or adding new
+    /// recipients. If an already-claimed address needs a corrected allocation,
+    /// deploy a separate airdrop contract for that address.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_root`  - 32-byte Merkle root of the updated distribution tree.
+    /// * `new_total` - New total allocation. Must be positive.
+    ///
+    /// Emits `("root_upd", admin)` with data `(new_root, new_total)`.
+    pub fn update_merkle_root(
+        env: Env,
+        new_root: BytesN<32>,
+        new_total: i128,
+    ) -> Result<(), AirdropError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(AirdropError::NotInitialized)?;
+        admin.require_auth();
+
+        if new_total <= 0 {
+            return Err(AirdropError::ZeroAmount);
+        }
+
+        // Top up the contract balance if the new total exceeds the current one.
+        let current_total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDeposited)
+            .unwrap_or(0);
+
+        if new_total > current_total {
+            let diff = new_total - current_total;
+            let token: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenAddress)
+                .ok_or(AirdropError::NotInitialized)?;
+            TokenClient::new(&env, &token).transfer(
+                &admin,
+                &env.current_contract_address(),
+                &diff,
+            );
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MerkleRoot, &new_root);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDeposited, &new_total);
+
+        env.events().publish(
+            (symbol_short!("root_upd"), admin),
+            (new_root, new_total),
+        );
+
+        Ok(())
+    }
+
     /// Transfer admin ownership to a new address.
     ///
     /// The current admin must authorise this call. Once transferred, the new
