@@ -54,6 +54,8 @@ export const claimCommand = new Command("claim")
       const preset = NETWORKS[network];
       const client = createAirdropClient({
         ...preset,
+        // Override rpcUrl if --rpc-url was provided on the global options.
+        ...(globalOpts.rpcUrl ? { rpcUrl: globalOpts.rpcUrl } : {}),
         contractId,
       });
 
