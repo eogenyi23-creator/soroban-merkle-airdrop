@@ -133,6 +133,18 @@ impl AirdropContract {
     /// demonstrating they are in the distribution tree. Tokens are transferred
     /// immediately on success.
     ///
+    /// # Expiration and claim deadline
+    ///
+    /// This contract has **no claim deadline**. The `expiration` field is a
+    /// gate for `reclaim()` only — it lets the admin recover unclaimed tokens
+    /// after the distribution window closes. Claims remain valid at any
+    /// ledger timestamp, including timestamps past the expiration, as long as
+    /// the contract still holds tokens.
+    ///
+    /// Once the admin calls `reclaim()` after expiry the contract balance
+    /// becomes zero. Any subsequent `claim` will panic when the underlying
+    /// SEP-41 token contract rejects the transfer due to insufficient balance.
+    ///
     /// # Arguments
     ///
     /// * `claimant` - Address claiming tokens (must sign the transaction).
