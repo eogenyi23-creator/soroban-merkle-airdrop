@@ -129,6 +129,45 @@ export const NETWORKS: Record<string, Omit<NetworkConfig, "contractId">> = {
   },
 };
 
+// ─── Merkle tree file ────────────────────────────────────────────────────────
+
+/**
+ * The serialised form of a Merkle tree JSON file produced by
+ * `merkle-airdrop generate` and consumed by {@link fetchMerkleTree}.
+ *
+ * @example
+ * ```ts
+ * import { fetchMerkleTree } from '@soroban-merkle-airdrop/sdk';
+ *
+ * const tree = await fetchMerkleTree('https://example.com/merkle-tree.json');
+ * console.log(tree.root);          // 64-char hex Merkle root
+ * console.log(tree.totalEntries);  // number of airdrop recipients
+ * ```
+ */
+export interface MerkleTreeFile {
+  /** 64-character hex Merkle root — store this on-chain via `initialize`. */
+  root: string;
+  /** Total number of eligible recipients. */
+  totalEntries: number;
+  /** Total token amount allocated across all recipients (decimal string). */
+  totalAmount: string;
+  /** ISO-8601 timestamp when the tree was generated. */
+  generatedAt: string;
+  /**
+   * Map from Stellar strkey address → serialised {@link ClaimProof}.
+   * Amounts are stored as decimal strings (not bigints) for JSON compatibility.
+   */
+  proofs: Record<
+    string,
+    {
+      address: string;
+      /** Amount as a decimal string — use `BigInt(proof.amount)` to convert. */
+      amount: string;
+      proof: string[];
+    }
+  >;
+}
+
 // ─── Claim result ────────────────────────────────────────────────────────────
 
 /**
