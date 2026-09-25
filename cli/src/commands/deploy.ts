@@ -224,6 +224,7 @@ async function pollTransactionSuccess(
   txHash: string
 ): Promise<StellarRpc.Api.GetSuccessfulTransactionResponse> {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
+  // eslint-disable-next-line no-constant-condition
   while (true) {
     await sleep(POLL_INTERVAL_MS);
     if (Date.now() >= deadline) {

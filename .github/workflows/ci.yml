@@ -42,18 +42,22 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: "9"
-      - name: Install & build SDK
-        run: |
-          pnpm install --no-frozen-lockfile
-          pnpm build
+      - name: Install workspace dependencies
+        run: pnpm install --no-frozen-lockfile
+      - name: Build SDK
+        run: pnpm build
+        working-directory: sdk
+      - name: Lint SDK
+        run: pnpm lint
         working-directory: sdk
       - name: Test SDK
         run: pnpm test
         working-directory: sdk
-      - name: Install & build CLI
-        run: |
-          pnpm install --no-frozen-lockfile
-          pnpm build
+      - name: Build CLI
+        run: pnpm build
+        working-directory: cli
+      - name: Lint CLI
+        run: pnpm lint
         working-directory: cli
       - name: Test CLI
         run: pnpm test
@@ -70,14 +74,11 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: "9"
-      - name: Install & build SDK
-        run: |
-          pnpm install --no-frozen-lockfile
-          pnpm build
-        working-directory: sdk
-      - name: Install web
+      - name: Install workspace dependencies
         run: pnpm install --no-frozen-lockfile
-        working-directory: web
+      - name: Build SDK
+        run: pnpm build
+        working-directory: sdk
       - name: Lint
         run: pnpm lint
         working-directory: web

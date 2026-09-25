@@ -6,7 +6,6 @@ import {
   Contract,
   rpc,
   TransactionBuilder,
-  Transaction,
   BASE_FEE,
   xdr,
   scValToNative,
@@ -14,8 +13,8 @@ import {
   Keypair,
   Address,
   Account,
-  Networks,
 } from "@stellar/stellar-sdk";
+import type { Transaction } from "@stellar/stellar-sdk";
 import type { ClaimProof, ClaimResult, NetworkConfig } from "./types.js";
 import { AirdropContractError, RpcError } from "./types.js";
 
@@ -123,6 +122,7 @@ export function createAirdropClient(config: NetworkConfig) {
 
     const txHash = sendResult.hash;
     const claimDeadline = Date.now() + pollTimeoutMs;
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       await sleep(2000);
       if (Date.now() >= claimDeadline) {
@@ -215,6 +215,7 @@ export function createAirdropClient(config: NetworkConfig) {
 
     const txHash = sendResult.hash;
     const submitDeadline = Date.now() + pollTimeoutMs;
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       await sleep(2000);
       if (Date.now() >= submitDeadline) {
