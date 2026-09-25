@@ -1173,6 +1173,62 @@ fn hex_to_array_32(hex: &str) -> [u8; 32] {
     out
 }
 
+// ─── Issue #39: Zero-balance reclaim ────────────────────────────────────────
+
+/// After every claimant has claimed their allocation the contract holds no
+/// remaining tokens.  `reclaim()` must:
+///   - return 0 (nothing transferred)
+///   - leave the admin balance unchanged
+///   - still emit the ("reclaimed", admin) event with data = 0
+#[test]
+fn test_reclaim_zero_balance_after_all_claimed() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+
+    // Two claimants sharing the full 1500-token pool.
+    let claimant0 = Address::generate(&env);
+    let claimant1 = Address::generate(&env);
+
+    let (root, proof0, proof1) =
+        build_two_leaf_tree(&env, &claimant0, 1000, &claimant1, 500);
+
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    // Both claimants claim their full allocation — the contract is now empty.
+    client.claim(&claimant0, &1000, &proof0);
+    client.claim(&claimant1, &500, &proof1);
+
+    // Record admin balance *before* reclaim so we can verify it is unchanged.
+    let admin_balance_before = TokenClient::new(&env, &token).balance(&admin);
+
+    // Advance ledger past expiration.
+    env.ledger().set_timestamp(DEFAULT_EXPIRATION);
+
+    let reclaimed = client.reclaim();
+
+    // reclaim() must return 0 — the contract was already empty.
+    assert_eq!(reclaimed, 0, "reclaim() must return 0 when contract balance is 0");
+
+    // Admin balance must be unchanged — no transfer happened.
+    let admin_balance_after = TokenClient::new(&env, &token).balance(&admin);
+    assert_eq!(
+        admin_balance_after, admin_balance_before,
+        "admin balance must be unchanged when reclaiming a zero-balance contract"
+    );
+
+    // The ("reclaimed", admin) event must still be emitted with data = 0.
+    assert_eq!(
+        contract_events(&env, &contract_id),
+        expected_events(
+            &env,
+            &contract_id,
+            &[((symbol_short!("reclaimed"), admin.clone()), 0_i128.into_val(&env))],
+        ),
+        "reclaim() must emit ('reclaimed', admin) with amount=0 even when nothing is transferred"
+    );
+}
+
 // ─── Issue #37: claim_for ──────────────────────────────────────────────────
 
 /// Operator calls claim_for; tokens land in the claimant's wallet, not the
