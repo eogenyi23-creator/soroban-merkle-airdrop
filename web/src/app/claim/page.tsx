@@ -298,7 +298,7 @@ export default function ClaimPage() {
       };
 
       // Verify proof locally before submitting
-      if (!verifyProof(treeData.root as string, proof.address, proof.amount, proof.proof)) {
+      if (!verifyProof(treeData.root as string, contractId, proof.address, proof.amount, proof.proof)) {
         throw new Error("Proof verification failed — file may be corrupted or from a different airdrop");
       }
 
