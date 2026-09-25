@@ -1080,3 +1080,95 @@ fn test_is_claimed_false_for_unclaimed_after_ledger_advance() {
         "is_claimed() must return false for an address that never claimed"
     );
 }
+
+// ─── Issue #35: Snapshot / golden-value test for Merkle root stability ────────
+//
+// Verifies that a fixed 5-entry airdrop list always produces the exact same
+// Merkle root as computed by the TypeScript SDK. The expected bytes are pasted
+// verbatim — they are NOT computed at test time.
+//
+// Golden root (TypeScript SDK output):
+//   9eb3a56c027bd438aec9dae40882e2c83c7aaa291bc4c162e87ee8f61a29624f
+//
+// If merkle::leaf_hash or the tree-building algorithm changes, this test
+// and the corresponding TypeScript snapshot test will both fail — which is
+// the intended signal.
+//
+// The 5-address list and amounts match sdk/src/merkle.test.ts exactly.
+#[test]
+fn test_snapshot_merkle_root_5_entries() {
+    let env = Env::default();
+
+    // ── Fixed 5-entry airdrop list (same as TypeScript snapshot test) ──────
+    let addr1 = Address::from_str(&env, "GBTL47RTFR5EKMZSXWOQU735WBK7LRPPDIDK3JTNTCZZ7NUBBRDTVSK2");
+    let addr2 = Address::from_str(&env, "GBIRYNFBULFVEHPRNOZENOG6RZ4ZPTRDLR7HNMRKHV2QHISIDHOYV6ZN");
+    let addr3 = Address::from_str(&env, "GCEEXCCX6TVKCYJ4MFIE3M2NJPVPGRSRPIHDDXR43XKNTNBADWOQWDYC");
+    let addr4 = Address::from_str(&env, "GDA3XFJZJZQMKRFFZSMQLXDZZRK3DHJWDNUQ4IBOQP4O7FXJPLFJZR7");
+    let addr5 = Address::from_str(&env, "GCVJDBALC2RQFLD2HYGZDFEZVDFPLFB63KYGIBHC3QLJXBQHJIASOPNB");
+
+    let leaf1 = merkle::leaf_hash(&env, &addr1, 1000);
+    let leaf2 = merkle::leaf_hash(&env, &addr2, 2000);
+    let leaf3 = merkle::leaf_hash(&env, &addr3, 3000);
+    let leaf4 = merkle::leaf_hash(&env, &addr4, 4000);
+    let leaf5 = merkle::leaf_hash(&env, &addr5, 5000);
+
+    // ── Golden leaf hashes — pasted literally from TypeScript SDK output ───
+    let expected_leaf1 = BytesN::from_array(&env, &hex_to_array_32(
+        "f0ca9a176c3553e6f05548ac5dbc4e723432ff28aef31c1739f48e3d81c19c2c",
+    ));
+    let expected_leaf2 = BytesN::from_array(&env, &hex_to_array_32(
+        "e6991451a1a8a47f0d50e2a5054cf3bc9947122f15603de16496ed983676c639",
+    ));
+    let expected_leaf3 = BytesN::from_array(&env, &hex_to_array_32(
+        "31ffe1df9aa9d81dc94fb438a9d2223bd397680f32fa6e07b2f93389327e64a8",
+    ));
+    let expected_leaf4 = BytesN::from_array(&env, &hex_to_array_32(
+        "c51b26ad0b6ce87f5461d707bb10faed6e7fe74df3722e8e0cd45465b2a38fe0",
+    ));
+    let expected_leaf5 = BytesN::from_array(&env, &hex_to_array_32(
+        "af46c7705009f14e8a2387236bb5ad7260f419331c6ed2253653ebc26af5c286",
+    ));
+
+    assert_eq!(leaf1, expected_leaf1, "leaf1 hash mismatch");
+    assert_eq!(leaf2, expected_leaf2, "leaf2 hash mismatch");
+    assert_eq!(leaf3, expected_leaf3, "leaf3 hash mismatch");
+    assert_eq!(leaf4, expected_leaf4, "leaf4 hash mismatch");
+    assert_eq!(leaf5, expected_leaf5, "leaf5 hash mismatch");
+
+    // ── Replicate the TypeScript buildMerkleTree algorithm to get the root ─
+    // Layer 0: [leaf1, leaf2, leaf3, leaf4, leaf5]
+    // Layer 1: [hash(leaf1,leaf2), hash(leaf3,leaf4), leaf5]   (5 → 3)
+    // Layer 2: [hash(l1l2, l3l4), leaf5]                       (3 → 2)
+    // Layer 3: [hash(l1l2l3l4, leaf5)]                         (2 → 1) = root
+
+    let l1_l2 = merkle_pair(&env, leaf1, leaf2);
+    let l3_l4 = merkle_pair(&env, leaf3, leaf4);
+    let l1_l2_l3_l4 = merkle_pair(&env, l1_l2, l3_l4);
+    let root = merkle_pair(&env, l1_l2_l3_l4, leaf5);
+
+    // Golden root — pasted literally, NOT computed.
+    let expected_root = BytesN::from_array(&env, &hex_to_array_32(
+        "9eb3a56c027bd438aec9dae40882e2c83c7aaa291bc4c162e87ee8f61a29624f",
+    ));
+
+    assert_eq!(
+        root, expected_root,
+        "5-entry Merkle root does not match the TypeScript SDK golden value. \
+         This means leafHash or the tree algorithm has changed and all deployed \
+         contracts are now unclaimable with existing proofs."
+    );
+}
+
+/// Decode a 64-character lowercase hex string into a [u8; 32] array.
+/// Panics on invalid input. Used only in golden-value tests so the constant
+/// expected values can be written as readable hex strings.
+fn hex_to_array_32(hex: &str) -> [u8; 32] {
+    assert_eq!(hex.len(), 64, "expected 64 hex chars (32 bytes)");
+    let mut out = [0u8; 32];
+    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let hi = hex_nibble(chunk[0]);
+        let lo = hex_nibble(chunk[1]);
+        out[i] = (hi << 4) | lo;
+    }
+    out
+}
