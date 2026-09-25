@@ -192,28 +192,37 @@ impl AirdropContract {
             claim_entry(&env, &entry.claimant, entry.amount, &proof)?;
         }
 
-        // Mark as claimed before transfer (re-entrancy guard).
-        env.storage().persistent().set(&claimed_key, &true);
-        env.storage()
-            .persistent()
-            .extend_ttl(&claimed_key, CLAIMED_TTL_THRESHOLD, CLAIMED_TTL);
-
-        // Transfer tokens to claimant.
-        let token: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenAddress)
-            .unwrap();
-        TokenClient::new(&env, &token).transfer(
-            &env.current_contract_address(),
-            &claimant,
-            &amount,
-        );
-
-        env.events()
-            .publish((symbol_short!("claimed"), claimant.clone()), amount);
-
         Ok(())
+    }
+
+    /// Claim tokens on behalf of a recipient (operator-pays model).
+    ///
+    /// Identical to [`Self::claim`] in every respect **except** that the
+    /// claimant does **not** need to sign the transaction. Any third party —
+    /// an operator, relayer, or sponsor — may submit this call and pay the
+    /// network fees. Tokens are always sent to `claimant`, never to the
+    /// transaction submitter.
+    ///
+    /// This is safe because the Merkle proof already binds the
+    /// `(claimant, amount)` pair to the on-chain root — an operator cannot
+    /// redirect tokens to themselves by substituting a different address.
+    ///
+    /// # Arguments
+    ///
+    /// * `claimant` - Address that will receive the tokens (does NOT sign).
+    /// * `amount`   - Token amount allocated to this claimant.
+    /// * `proof`    - Ordered list of sibling hashes from leaf to root.
+    pub fn claim_for(
+        env: Env,
+        claimant: Address,
+        amount: i128,
+        proof: Vec<BytesN<32>>,
+    ) -> Result<(), AirdropError> {
+        // NOTE: claimant.require_auth() is intentionally omitted.
+        // The Merkle proof is the sole authorisation: only someone who knows
+        // the correct (claimant, amount, proof) triple can trigger a claim,
+        // and the tokens always land in `claimant`'s wallet.
+        claim_entry(&env, &claimant, amount, &proof)
     }
 
     // ─── Admin ───────────────────────────────────────────────────────────────
