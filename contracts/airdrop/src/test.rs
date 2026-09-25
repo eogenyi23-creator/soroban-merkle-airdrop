@@ -315,6 +315,67 @@ fn test_reclaim_before_expiration_fails() {
     assert_eq!(result, Err(Ok(AirdropError::NotYetExpired)));
 }
 
+// ─── Issue #38: Claim-after-expiry behaviour ────────────────────────────────
+
+/// The contract has **no claim deadline**: advancing the ledger past the
+/// expiration timestamp does not prevent new claims as long as the contract
+/// still holds tokens.  Only `reclaim()` (admin-only, after expiry) can drain
+/// the balance and make further claims impossible.
+///
+/// Part 1 of 2 — claim still succeeds after `ledger.timestamp >= expiration`.
+#[test]
+fn test_claim_succeeds_after_expiration_before_reclaim() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    // Advance ledger to exactly the expiration timestamp.
+    env.ledger().set_timestamp(DEFAULT_EXPIRATION);
+
+    // Claim must still succeed — there is no claim deadline in this contract.
+    client.claim(&claimant, &1000, &proof);
+
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&claimant),
+        1000,
+        "claimant must receive tokens even when ledger is past expiration"
+    );
+    assert!(client.is_claimed(&claimant));
+}
+
+/// Part 2 of 2 — after `reclaim()` drains the contract, a subsequent `claim`
+/// panics because the token contract rejects a transfer from a zero-balance
+/// account.  The contract itself has no insufficient-balance guard; the panic
+/// originates in the SEP-41 token contract.
+#[test]
+#[should_panic]
+fn test_claim_panics_after_reclaim_empties_contract() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    // Admin reclaims all tokens after expiry.
+    env.ledger().set_timestamp(DEFAULT_EXPIRATION);
+    client.reclaim();
+
+    // Now try to claim — the contract holds 0 tokens.
+    // The Soroban token contract will panic on the transfer because
+    // the airdrop contract has an insufficient balance.
+    client.claim(&claimant, &1000, &proof);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[test]
 fn test_double_initialize_fails() {
     let (env, admin, token, contract_id) = setup();
