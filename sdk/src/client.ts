@@ -1,12 +1,16 @@
 /**
- * Typed client for the soroban-merkle-airdrop contract.
+ * @module client
+ * @description
+ * Typed RPC client for the soroban-merkle-airdrop contract.
+ *
+ * Create a client with {@link createAirdropClient} and use it to query
+ * contract state or submit claim transactions.
  */
 
 import {
   Contract,
   rpc,
   TransactionBuilder,
-  Transaction,
   BASE_FEE,
   xdr,
   scValToNative,
@@ -14,17 +18,52 @@ import {
   Keypair,
   Address,
   Account,
-  Networks,
 } from "@stellar/stellar-sdk";
+import type { Transaction } from "@stellar/stellar-sdk";
 import type { ClaimProof, ClaimResult, NetworkConfig } from "./types.js";
 import { AirdropContractError, RpcError } from "./types.js";
 
+/**
+ * Create a typed client for an on-chain soroban-merkle-airdrop contract.
+ *
+ * All RPC calls are made against the `rpcUrl` and `networkPassphrase` specified
+ * in `config`. The returned object is a plain object (not a class instance) — all
+ * methods share the same closure-bound `config`.
+ *
+ * @param config - Network configuration and contract address. Use {@link NETWORKS}
+ *   for well-known testnet/mainnet presets.
+ * @returns An object with methods for querying contract state and submitting claims.
+ *
+ * @example
+ * ```ts
+ * import { createAirdropClient, NETWORKS } from '@soroban-merkle-airdrop/sdk';
+ *
+ * const client = createAirdropClient({
+ *   ...NETWORKS.testnet,
+ *   contractId: "CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+ * });
+ *
+ * const active = await client.isActive();
+ * console.log("Airdrop active:", active);
+ * ```
+ */
 export function createAirdropClient(config: NetworkConfig) {
   const server = new rpc.Server(config.rpcUrl, { allowHttp: false });
   const contractInst = new Contract(config.contractId);
   const pollTimeoutMs = config.pollTimeoutMs ?? 60_000;
 
-  /** Check if an address has already claimed. */
+  /**
+   * Check if an address has already claimed their tokens.
+   *
+   * @param address - Stellar strkey address to check (G... or C...).
+   * @returns `true` if the address has already claimed, `false` otherwise.
+   *
+   * @example
+   * ```ts
+   * const claimed = await client.isClaimed("GABC...");
+   * if (claimed) console.log("Already claimed");
+   * ```
+   */
   async function isClaimed(address: string): Promise<boolean> {
     const result = await simulateRead(
       contractInst.call("is_claimed", new Address(address).toScVal())
@@ -32,13 +71,40 @@ export function createAirdropClient(config: NetworkConfig) {
     return scValToNative(result) as boolean;
   }
 
-  /** Check if the airdrop is currently active. */
+  /**
+   * Check if the airdrop is currently active.
+   *
+   * An airdrop becomes inactive after it has expired and the admin has
+   * reclaimed the remaining tokens.
+   *
+   * @returns `true` if the airdrop is active and accepting claims.
+   *
+   * @example
+   * ```ts
+   * const active = await client.isActive();
+   * if (!active) console.log("Airdrop has ended");
+   * ```
+   */
   async function isActive(): Promise<boolean> {
     const result = await simulateRead(contractInst.call("is_active"));
     return scValToNative(result) as boolean;
   }
 
-  /** Fetch the Merkle root stored in the contract. */
+  /**
+   * Fetch the Merkle root stored in the contract.
+   *
+   * Compare this against the root produced by {@link buildMerkleTree} to
+   * confirm that a `merkle-tree.json` file corresponds to this contract.
+   *
+   * @returns The 64-character hex Merkle root string, or `null` if the
+   *   contract has not been initialised yet.
+   *
+   * @example
+   * ```ts
+   * const root = await client.merkleRoot();
+   * console.log("On-chain root:", root);
+   * ```
+   */
   async function merkleRoot(): Promise<string | null> {
     const result = await simulateRead(contractInst.call("merkle_root"));
     const native = scValToNative(result);
@@ -46,15 +112,39 @@ export function createAirdropClient(config: NetworkConfig) {
     return Buffer.from(native as Uint8Array).toString("hex");
   }
 
-  /** Fetch total tokens deposited. */
+  /**
+   * Fetch the total tokens deposited into the airdrop contract.
+   *
+   * @returns Total deposited amount in base units (stroops for XLM-based tokens).
+   *
+   * @example
+   * ```ts
+   * const total = await client.totalDeposited();
+   * console.log("Total tokens:", total.toString());
+   * ```
+   */
   async function totalDeposited(): Promise<bigint> {
     const result = await simulateRead(contractInst.call("total_deposited"));
     return BigInt(scValToNative(result) as number);
   }
 
   /**
-   * Fetch the expiration timestamp (Unix seconds) after which reclaim is allowed.
-   * Returns null if the contract has not been initialised or has no expiration set.
+   * Fetch the expiration timestamp (Unix seconds) after which unclaimed tokens
+   * can be reclaimed by the admin.
+   *
+   * Use this to display a countdown or expiration warning in a UI.
+   *
+   * @returns Unix timestamp in seconds as a bigint, or `null` if the contract
+   *   has not been initialised or has no expiration set.
+   *
+   * @example
+   * ```ts
+   * const exp = await client.expiration();
+   * if (exp !== null) {
+   *   const date = new Date(Number(exp) * 1000);
+   *   console.log("Airdrop expires:", date.toISOString());
+   * }
+   * ```
    */
   async function expiration(): Promise<bigint | null> {
     const result = await simulateRead(contractInst.call("expiration"));
@@ -64,10 +154,31 @@ export function createAirdropClient(config: NetworkConfig) {
   }
 
   /**
-   * Submit a claim transaction.
+   * Submit a claim transaction on behalf of the claimant.
    *
-   * @param claimProof - The proof package from `buildMerkleTree`.
+   * This method signs and submits the transaction using a raw Stellar secret key.
+   * For browser-based flows where the user signs with Freighter, use
+   * {@link buildClaimTransaction} + {@link submitSignedTransaction} instead.
+   *
+   * @param claimProof - The proof package for the claimant, as returned by
+   *   `buildMerkleTree(...).proofs.get(address)`.
    * @param signerSecretKey - The claimant's Stellar secret key (S...).
+   * @returns A {@link ClaimResult} with the on-chain transaction hash and claimed amount.
+   * @throws {@link AirdropContractError} if the contract rejects the claim
+   *   (e.g. already claimed, invalid proof, airdrop inactive).
+   * @throws {@link RpcError} for network-level failures.
+   *
+   * @example
+   * ```ts
+   * import { buildMerkleTree, createAirdropClient, NETWORKS } from '@soroban-merkle-airdrop/sdk';
+   *
+   * const { root, proofs } = buildMerkleTree(entries);
+   * const client = createAirdropClient({ ...NETWORKS.testnet, contractId });
+   *
+   * const proof = proofs.get("GABC...")!;
+   * const result = await client.claim(proof, "SABC...");
+   * console.log("Claimed in tx:", result.txHash);
+   * ```
    */
   async function claim(
     claimProof: ClaimProof,
@@ -101,8 +212,6 @@ export function createAirdropClient(config: NetworkConfig) {
 
     const simResult = await server.simulateTransaction(tx);
     if (rpc.Api.isSimulationError(simResult)) {
-      // Try to extract a numeric contract error code from the simulation error string.
-      // Soroban surfaces contract errors as "Error(Contract, #N)" in the error message.
       const contractCode = parseContractErrorCode(simResult.error);
       if (contractCode !== null) {
         throw new AirdropContractError(contractCode);
@@ -123,6 +232,7 @@ export function createAirdropClient(config: NetworkConfig) {
 
     const txHash = sendResult.hash;
     const claimDeadline = Date.now() + pollTimeoutMs;
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       await sleep(2000);
       if (Date.now() >= claimDeadline) {
@@ -150,10 +260,23 @@ export function createAirdropClient(config: NetworkConfig) {
    * (e.g. via a browser wallet like Freighter).
    *
    * The caller is responsible for signing the returned XDR and submitting it
-   * via `submitSignedTransaction`.
+   * via {@link submitSignedTransaction}.
    *
-   * @param claimProof - The proof package from `buildMerkleTree`.
-   * @returns Base64-encoded unsigned transaction envelope XDR.
+   * @param claimProof - The proof package for the claimant, as returned by
+   *   `buildMerkleTree(...).proofs.get(address)`.
+   * @returns Base64-encoded unsigned transaction envelope XDR suitable for
+   *   passing to `signTransaction()` from `@stellar/freighter-api`.
+   * @throws {@link AirdropContractError} if simulation rejects the claim.
+   * @throws {@link RpcError} for network-level failures.
+   *
+   * @example
+   * ```ts
+   * import { signTransaction } from '@stellar/freighter-api';
+   *
+   * const unsignedXdr = await client.buildClaimTransaction(proof);
+   * const signedXdr = await signTransaction(unsignedXdr, { networkPassphrase });
+   * const result = await client.submitSignedTransaction(signedXdr, proof);
+   * ```
    */
   async function buildClaimTransaction(claimProof: ClaimProof): Promise<string> {
     const sourceAccount = await server.getAccount(claimProof.address);
@@ -196,9 +319,22 @@ export function createAirdropClient(config: NetworkConfig) {
   /**
    * Submit a signed transaction XDR produced by an external wallet.
    *
+   * Call this after {@link buildClaimTransaction} and signing the result with
+   * Freighter (or any other Stellar wallet).
+   *
    * @param signedXdr - Base64-encoded signed transaction envelope XDR.
-   * @param claimProof - The original proof (used to populate the result).
-   * @returns ClaimResult with the on-chain transaction hash and claimed amount.
+   * @param claimProof - The original proof used to build the transaction
+   *   (used to populate the returned {@link ClaimResult}).
+   * @returns A {@link ClaimResult} with the on-chain transaction hash and claimed amount.
+   * @throws {@link RpcError} for submission failures or polling timeouts.
+   *
+   * @example
+   * ```ts
+   * const unsignedXdr = await client.buildClaimTransaction(proof);
+   * const signedXdr = await signTransaction(unsignedXdr, { networkPassphrase });
+   * const result = await client.submitSignedTransaction(signedXdr, proof);
+   * console.log("Tx hash:", result.txHash);
+   * ```
    */
   async function submitSignedTransaction(
     signedXdr: string,
@@ -215,6 +351,7 @@ export function createAirdropClient(config: NetworkConfig) {
 
     const txHash = sendResult.hash;
     const submitDeadline = Date.now() + pollTimeoutMs;
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       await sleep(2000);
       if (Date.now() >= submitDeadline) {
@@ -236,6 +373,8 @@ export function createAirdropClient(config: NetworkConfig) {
       }
     }
   }
+
+  // ─── Internal helpers ──────────────────────────────────────────────────────
 
   async function simulateRead(operation: xdr.Operation): Promise<xdr.ScVal> {
     const dummy = Keypair.random();
@@ -259,13 +398,25 @@ export function createAirdropClient(config: NetworkConfig) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  return { isClaimed, isActive, merkleRoot, totalDeposited, expiration, claim, buildClaimTransaction, submitSignedTransaction };
+  return {
+    isClaimed,
+    isActive,
+    merkleRoot,
+    totalDeposited,
+    expiration,
+    claim,
+    buildClaimTransaction,
+    submitSignedTransaction,
+  };
 }
 
 /**
  * Parse a numeric contract error code from a Soroban simulation error string.
- * Soroban formats contract errors as: "Error(Contract, #N)" where N is the code.
- * Returns the code as a number, or null if not parseable.
+ * Soroban formats contract errors as: `"Error(Contract, #N)"` where N is the code.
+ *
+ * @param error - Raw error string from the Soroban RPC simulation response.
+ * @returns The numeric error code, or `null` if the string does not match.
+ * @internal
  */
 function parseContractErrorCode(error: string): number | null {
   const match = /Error\s*\(\s*Contract\s*,\s*#(\d+)\s*\)/i.exec(error);

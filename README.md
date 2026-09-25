@@ -64,6 +64,32 @@ soroban-merkle-airdrop/
     └── deploy.yml              # Manual deploy to testnet/mainnet
 ```
 
+## API Reference
+
+Full TypeDoc-generated API reference for the TypeScript SDK:
+
+```bash
+cd sdk && pnpm docs   # generates sdk/docs/index.html
+```
+
+Or browse the source directly:
+- [`sdk/src/merkle.ts`](sdk/src/merkle.ts) — `buildMerkleTree`, `verifyProof`, `leafHash`, `hashPair`
+- [`sdk/src/client.ts`](sdk/src/client.ts) — `createAirdropClient` (RPC client)
+- [`sdk/src/types.ts`](sdk/src/types.ts) — all types, interfaces, and error classes
+
+## Example Script
+
+A runnable end-to-end workflow is in [`examples/full-workflow.ts`](examples/full-workflow.ts).
+It builds a 3-entry Merkle tree, verifies all proofs, and submits (or prints) a claim transaction:
+
+```bash
+# Dry-run — no keys required, prints the unsigned transaction XDR
+DRY_RUN=1 npx ts-node examples/full-workflow.ts
+
+# Live claim against testnet
+CONTRACT_ID=C... SECRET_KEY=S... npx ts-node examples/full-workflow.ts
+```
+
 ## SDK Installation
 
 Install the TypeScript SDK into your project:

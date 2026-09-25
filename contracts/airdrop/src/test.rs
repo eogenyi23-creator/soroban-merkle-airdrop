@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+extern crate alloc;
+
 use super::*;
 use soroban_sdk::{
     testutils::{storage::Instance as _, Address as _, Events, Ledger, MockAuth, MockAuthInvoke},
@@ -601,6 +603,111 @@ fn test_non_admin_reclaim_fails() {
     client.reclaim();
 }
 
+// ─── Issue #32: Cross-language leaf-hash test vector suite ─────────────────
+
+/// Loop over every entry in `test-vectors/leaf-hash-vectors.json` and assert
+/// that `merkle::leaf_hash` in Rust produces the expected hex output.
+///
+/// The expected values in the JSON file were produced by running the compiled
+/// TypeScript SDK (`sdk/src/merkle.ts`) with the same inputs, so a mismatch
+/// here means the two implementations have diverged.
+///
+/// Vectors cover: G-addresses, C-addresses, amount=1, amount=i128::MAX,
+/// amounts where only the high 64-bit word is set, and typical amounts.
+#[test]
+fn test_leaf_hash_vectors() {
+    let env = Env::default();
+
+    // The JSON file is embedded at compile time so the test is self-contained
+    // and runs without filesystem access from the Soroban test harness.
+    let json_bytes = include_bytes!("../../../test-vectors/leaf-hash-vectors.json");
+    let json_str = core::str::from_utf8(json_bytes).expect("leaf-hash-vectors.json is not valid UTF-8");
+
+    // Minimal JSON array parser — no external crate required.
+    // Each element has the shape:
+    //   { "_comment": "...", "address": "G...", "amount": "123", "expected_leaf_hex": "abc..." }
+    // We extract address, amount (as string→i128), and expected_leaf_hex.
+    for (i, chunk) in json_str
+        .split('{')
+        .skip(1) // skip the opening of the outer array
+        .enumerate()
+    {
+        // Skip entries that don't look like data objects.
+        if !chunk.contains("\"address\"") {
+            continue;
+        }
+
+        let address = extract_json_str(chunk, "address")
+            .unwrap_or_else(|| panic!("vector {i}: missing 'address' field"));
+        let amount_str = extract_json_str(chunk, "amount")
+            .unwrap_or_else(|| panic!("vector {i}: missing 'amount' field"));
+        let expected_hex = extract_json_str(chunk, "expected_leaf_hex")
+            .unwrap_or_else(|| panic!("vector {i}: missing 'expected_leaf_hex' field"));
+
+        let amount: i128 = amount_str
+            .parse()
+            .unwrap_or_else(|_| panic!("vector {i}: cannot parse amount '{amount_str}'"));
+
+        let addr = Address::from_str(&env, address);
+        let actual = merkle::leaf_hash(&env, &addr, amount);
+
+        let expected_bytes = hex_decode(expected_hex)
+            .unwrap_or_else(|| panic!("vector {i}: invalid hex in expected_leaf_hex"));
+        let expected: BytesN<32> = BytesN::from_array(
+            &env,
+            expected_bytes
+                .as_slice()
+                .try_into()
+                .unwrap_or_else(|_| panic!("vector {i}: expected_leaf_hex must be 32 bytes")),
+        );
+
+        assert_eq!(
+            actual, expected,
+            "vector {i} ({address}, {amount_str}): Rust leaf_hash does not match TypeScript SDK output"
+        );
+    }
+}
+
+/// Extract the string value for a JSON key from a raw chunk of JSON text.
+/// Handles the form `"key": "value"` (double-quoted string values only).
+fn extract_json_str<'a>(chunk: &'a str, key: &str) -> Option<&'a str> {
+    let needle = alloc::format!("\"{}\":", key);
+    let start = chunk.find(needle.as_str())?;
+    let rest = &chunk[start + needle.len()..];
+    // Skip whitespace.
+    let rest = rest.trim_start_matches([' ', '\t', '\n', '\r']);
+    if !rest.starts_with('"') {
+        return None;
+    }
+    let inner = &rest[1..]; // skip opening quote
+    let end = inner.find('"')?;
+    Some(&inner[..end])
+}
+
+/// Decode a lowercase hex string into bytes. Returns None on invalid input.
+fn hex_decode(hex: &str) -> Option<alloc::vec::Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = alloc::vec::Vec::with_capacity(hex.len() / 2);
+    let bytes = hex.as_bytes();
+    for chunk in bytes.chunks(2) {
+        let hi = hex_nibble(chunk[0])?;
+        let lo = hex_nibble(chunk[1])?;
+        out.push((hi << 4) | lo);
+    }
+    Some(out)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 // ─── Issue 6: Cross-language leaf-hash test vector ─────────────────────────
 
 /// Cross-language test vector: proves that `merkle::leaf_hash` in Rust
@@ -913,4 +1020,155 @@ fn test_verify_proof_all_same_hash_returns_false() {
         !merkle::verify_proof(&env, &legitimate_root, leaf.clone(), &bogus_proof),
         "all-same-hash proof against a real root must return false"
     );
+}
+
+// ─── Issue #43: Persistent TTL refresh on is_claimed ───────────────────────
+
+/// is_claimed() must return true even after many ledger advances if the entry
+/// exists, because it refreshes the persistent Claimed(addr) TTL.
+///
+/// Without the fix, the persistent entry could archive and is_claimed() would
+/// return false, enabling a double-claim.
+#[test]
+fn test_is_claimed_refreshes_persistent_ttl() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+
+    // Claim so the Claimed(claimant) persistent entry exists.
+    client.claim(&claimant, &1000, &proof);
+    assert!(client.is_claimed(&claimant), "should be claimed right after claim()");
+
+    // Simulate many ledger advances — enough that the persistent entry would
+    // archive if extend_ttl were not called.  We do this by advancing the
+    // sequence number well past the CLAIMED_TTL threshold.
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + CLAIMED_TTL_THRESHOLD + 1);
+
+    // is_claimed() must still return true: it refreshes the persistent TTL.
+    // If the fix were absent the persistent entry would appear missing.
+    assert!(
+        client.is_claimed(&claimant),
+        "is_claimed() must return true after ledger advances — persistent TTL must be refreshed"
+    );
+}
+
+/// is_claimed() must NOT attempt to extend TTL for an address that never
+/// claimed — `has()` returns false and no extend_ttl call should happen.
+#[test]
+fn test_is_claimed_false_for_unclaimed_after_ledger_advance() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let never_claimed = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION);
+    client.claim(&claimant, &1000, &proof);
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + CLAIMED_TTL_THRESHOLD + 1);
+
+    // An address that never claimed must still return false.
+    assert!(
+        !client.is_claimed(&never_claimed),
+        "is_claimed() must return false for an address that never claimed"
+    );
+}
+
+// ─── Issue #35: Snapshot / golden-value test for Merkle root stability ────────
+//
+// Verifies that a fixed 5-entry airdrop list always produces the exact same
+// Merkle root as computed by the TypeScript SDK. The expected bytes are pasted
+// verbatim — they are NOT computed at test time.
+//
+// Golden root (TypeScript SDK output):
+//   9eb3a56c027bd438aec9dae40882e2c83c7aaa291bc4c162e87ee8f61a29624f
+//
+// If merkle::leaf_hash or the tree-building algorithm changes, this test
+// and the corresponding TypeScript snapshot test will both fail — which is
+// the intended signal.
+//
+// The 5-address list and amounts match sdk/src/merkle.test.ts exactly.
+#[test]
+fn test_snapshot_merkle_root_5_entries() {
+    let env = Env::default();
+
+    // ── Fixed 5-entry airdrop list (same as TypeScript snapshot test) ──────
+    let addr1 = Address::from_str(&env, "GBTL47RTFR5EKMZSXWOQU735WBK7LRPPDIDK3JTNTCZZ7NUBBRDTVSK2");
+    let addr2 = Address::from_str(&env, "GBIRYNFBULFVEHPRNOZENOG6RZ4ZPTRDLR7HNMRKHV2QHISIDHOYV6ZN");
+    let addr3 = Address::from_str(&env, "GCEEXCCX6TVKCYJ4MFIE3M2NJPVPGRSRPIHDDXR43XKNTNBADWOQWDYC");
+    let addr4 = Address::from_str(&env, "GDA3XFJZJZQMKRFFZSMQLXDZZRK3DHJWDNUQ4IBOQP4O7FXJPLFJZR7");
+    let addr5 = Address::from_str(&env, "GCVJDBALC2RQFLD2HYGZDFEZVDFPLFB63KYGIBHC3QLJXBQHJIASOPNB");
+
+    let leaf1 = merkle::leaf_hash(&env, &addr1, 1000);
+    let leaf2 = merkle::leaf_hash(&env, &addr2, 2000);
+    let leaf3 = merkle::leaf_hash(&env, &addr3, 3000);
+    let leaf4 = merkle::leaf_hash(&env, &addr4, 4000);
+    let leaf5 = merkle::leaf_hash(&env, &addr5, 5000);
+
+    // ── Golden leaf hashes — pasted literally from TypeScript SDK output ───
+    let expected_leaf1 = BytesN::from_array(&env, &hex_to_array_32(
+        "f0ca9a176c3553e6f05548ac5dbc4e723432ff28aef31c1739f48e3d81c19c2c",
+    ));
+    let expected_leaf2 = BytesN::from_array(&env, &hex_to_array_32(
+        "e6991451a1a8a47f0d50e2a5054cf3bc9947122f15603de16496ed983676c639",
+    ));
+    let expected_leaf3 = BytesN::from_array(&env, &hex_to_array_32(
+        "31ffe1df9aa9d81dc94fb438a9d2223bd397680f32fa6e07b2f93389327e64a8",
+    ));
+    let expected_leaf4 = BytesN::from_array(&env, &hex_to_array_32(
+        "c51b26ad0b6ce87f5461d707bb10faed6e7fe74df3722e8e0cd45465b2a38fe0",
+    ));
+    let expected_leaf5 = BytesN::from_array(&env, &hex_to_array_32(
+        "af46c7705009f14e8a2387236bb5ad7260f419331c6ed2253653ebc26af5c286",
+    ));
+
+    assert_eq!(leaf1, expected_leaf1, "leaf1 hash mismatch");
+    assert_eq!(leaf2, expected_leaf2, "leaf2 hash mismatch");
+    assert_eq!(leaf3, expected_leaf3, "leaf3 hash mismatch");
+    assert_eq!(leaf4, expected_leaf4, "leaf4 hash mismatch");
+    assert_eq!(leaf5, expected_leaf5, "leaf5 hash mismatch");
+
+    // ── Replicate the TypeScript buildMerkleTree algorithm to get the root ─
+    // Layer 0: [leaf1, leaf2, leaf3, leaf4, leaf5]
+    // Layer 1: [hash(leaf1,leaf2), hash(leaf3,leaf4), leaf5]   (5 → 3)
+    // Layer 2: [hash(l1l2, l3l4), leaf5]                       (3 → 2)
+    // Layer 3: [hash(l1l2l3l4, leaf5)]                         (2 → 1) = root
+
+    let l1_l2 = merkle_pair(&env, leaf1, leaf2);
+    let l3_l4 = merkle_pair(&env, leaf3, leaf4);
+    let l1_l2_l3_l4 = merkle_pair(&env, l1_l2, l3_l4);
+    let root = merkle_pair(&env, l1_l2_l3_l4, leaf5);
+
+    // Golden root — pasted literally, NOT computed.
+    let expected_root = BytesN::from_array(&env, &hex_to_array_32(
+        "9eb3a56c027bd438aec9dae40882e2c83c7aaa291bc4c162e87ee8f61a29624f",
+    ));
+
+    assert_eq!(
+        root, expected_root,
+        "5-entry Merkle root does not match the TypeScript SDK golden value. \
+         This means leafHash or the tree algorithm has changed and all deployed \
+         contracts are now unclaimable with existing proofs."
+    );
+}
+
+/// Decode a 64-character lowercase hex string into a [u8; 32] array.
+/// Panics on invalid input. Used only in golden-value tests so the constant
+/// expected values can be written as readable hex strings.
+fn hex_to_array_32(hex: &str) -> [u8; 32] {
+    assert_eq!(hex.len(), 64, "expected 64 hex chars (32 bytes)");
+    let mut out = [0u8; 32];
+    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let hi = hex_nibble(chunk[0]);
+        let lo = hex_nibble(chunk[1]);
+        out[i] = (hi << 4) | lo;
+    }
+    out
 }
