@@ -99,6 +99,9 @@ impl AirdropContract {
         if total_amount <= 0 {
             return Err(AirdropError::ZeroAmount);
         }
+        if expiration <= env.ledger().timestamp() {
+            return Err(AirdropError::ExpirationInPast);
+        }
 
         admin.require_auth();
 

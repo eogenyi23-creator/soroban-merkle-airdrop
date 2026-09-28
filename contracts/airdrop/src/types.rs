@@ -39,6 +39,9 @@ pub enum AirdropError {
     ZeroAmount = 6,
     /// `reclaim()` called before the expiration timestamp has been reached.
     NotYetExpired = 7,
+    /// `initialize()` called with an expiration timestamp that is already in
+    /// the past (i.e. `expiration <= env.ledger().timestamp()`).
+    ExpirationInPast = 8,
 }
 
 /// A single recipient's allocation inside a batch claim.
