@@ -395,6 +395,72 @@ fn test_double_initialize_fails() {
     assert_eq!(result, Err(Ok(AirdropError::AlreadyInitialized)));
 }
 
+// ─── Issue #41: Expiration validation on initialize ─────────────────────────
+
+/// initialize must reject an expiration timestamp that is already in the past
+/// (i.e. expiration <= env.ledger().timestamp()).
+#[test]
+fn test_initialize_with_past_expiration_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+
+    // Advance ledger to timestamp 1000, then use expiration = 999 (in the past).
+    env.ledger().set_timestamp(1000);
+    let past_expiration: u64 = 999;
+
+    let result = client.try_initialize(&admin, &token, &root, &1500, &past_expiration);
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::ExpirationInPast)),
+        "initialize with expiration in the past must return ExpirationInPast"
+    );
+}
+
+/// initialize must also reject expiration == current ledger timestamp (not strictly future).
+#[test]
+fn test_initialize_with_expiration_equal_to_current_timestamp_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+
+    // Set ledger to timestamp 500 and use expiration == 500 (equal, not future).
+    env.ledger().set_timestamp(500);
+    let equal_expiration: u64 = 500;
+
+    let result = client.try_initialize(&admin, &token, &root, &1500, &equal_expiration);
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::ExpirationInPast)),
+        "initialize with expiration == current timestamp must return ExpirationInPast"
+    );
+}
+
+/// initialize must succeed when expiration == current_timestamp + 1 (strictly future).
+#[test]
+fn test_initialize_with_expiration_one_second_in_future_succeeds() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+
+    // Set ledger to timestamp 100, use expiration = 101 (exactly 1 second ahead).
+    env.ledger().set_timestamp(100);
+    let future_expiration: u64 = 101;
+
+    // Must succeed without error.
+    client.initialize(&admin, &token, &root, &1500, &future_expiration);
+    assert_eq!(client.expiration(), Some(future_expiration));
+}
+
 #[test]
 fn test_zero_amount_claim_fails() {
     let (env, admin, token, contract_id) = setup();
