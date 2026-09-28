@@ -45,6 +45,7 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
       setTimeout: vi.fn().mockReturnThis(),
       build: vi.fn().mockReturnValue({ sign: vi.fn(), toXDR: vi.fn() }),
     })),
+    Account: vi.fn().mockImplementation(() => ({})),
     Keypair: {
       ...actual.Keypair,
       fromSecret: vi.fn().mockReturnValue({
@@ -172,4 +173,50 @@ describe("createAirdropClient — polling timeout (Issue #15)", () => {
     expect(result.success).toBe(true);
     expect(result.txHash).toBe("success123");
   }, 15_000);
+});
+
+// ─── Issue #40: expiration() method ────────────────────────────────────────
+
+describe("createAirdropClient — expiration() (Issue #40)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns null when contract is not initialised (scvVoid)", async () => {
+    const { xdr } = await import("@stellar/stellar-sdk");
+    const client = createAirdropClient(BASE_CONFIG);
+    const server = await getMockServer();
+
+    // Simulate returning scvVoid — contract not initialised.
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: xdr.ScVal.scvVoid() },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+
+    const result = await client.expiration();
+    expect(result).toBeNull();
+  });
+
+  it("returns a bigint Unix timestamp when contract is initialised", async () => {
+    const { xdr } = await import("@stellar/stellar-sdk");
+    const client = createAirdropClient(BASE_CONFIG);
+    const server = await getMockServer();
+
+    // Simulate returning a u64 value (1_700_000_000 seconds — a realistic timestamp).
+    const expectedTimestamp = 1_700_000_000n;
+    server.simulateTransaction.mockResolvedValue({
+      result: {
+        retval: xdr.ScVal.scvU64(
+          xdr.Uint64.fromString(expectedTimestamp.toString())
+        ),
+      },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+
+    const result = await client.expiration();
+    expect(typeof result).toBe("bigint");
+    expect(result).toBe(expectedTimestamp);
+  });
 });
