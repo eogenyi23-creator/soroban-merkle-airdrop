@@ -28,6 +28,28 @@ jobs:
         run: cargo clippy --manifest-path contracts/airdrop/Cargo.toml -- -D warnings
       - name: Run tests
         run: cargo test --manifest-path contracts/airdrop/Cargo.toml
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --version 0.31.2 --locked
+      - name: Generate coverage report
+        # Run tarpaulin against the rlib target (cdylib is excluded automatically).
+        # CI does NOT fail on low coverage — this is informational only initially.
+        # --out Xml  → cobertura XML for artifact upload
+        # --out Html → human-readable HTML report
+        # --output-dir → place all reports under coverage/
+        run: |
+          cargo tarpaulin \
+            --manifest-path contracts/airdrop/Cargo.toml \
+            --out Xml Html \
+            --output-dir coverage \
+            --skip-clean \
+            --timeout 120
+        continue-on-error: true
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: warn
       - name: Build WASM
         run: cargo build --manifest-path contracts/airdrop/Cargo.toml --target wasm32v1-none --release
 
