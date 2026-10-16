@@ -33,6 +33,6 @@
     "jest-axe": "9.0.0",
     "jsdom": "24.1.1",
     "typescript": "5.4.5",
-    "vitest": "2.0.5"
+    "vitest": "5.0.4"
   }
 }
