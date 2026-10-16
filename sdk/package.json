@@ -21,7 +21,7 @@
     "@stellar/stellar-sdk": "13.1.0"
   },
   "devDependencies": {
-    "@types/node": "20.14.0",
+    "@types/node": "26.6.5",
     "@vitest/coverage-v8": "1.6.0",
     "typescript": "5.4.5",
     "typedoc": "0.26.11",
