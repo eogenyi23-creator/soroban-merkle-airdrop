@@ -75,7 +75,7 @@ jobs:
           echo "WASM size    : ${SIZE_BYTES} bytes (${SIZE_KB} KB)"
 
       - name: Upload WASM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: soroban_merkle_airdrop_wasm
           path: target/wasm32v1-none/release/soroban_merkle_airdrop.wasm
