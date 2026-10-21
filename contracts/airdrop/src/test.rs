@@ -1997,3 +1997,151 @@ fn test_pre_init_all_queries() {
     assert_eq!(client.total_deposited(), 0, "total_deposited() must be 0 before init");
     assert!(!client.is_claimed(&random_addr), "is_claimed(addr) must be false before init");
 }
+
+// ─── Issue #119: Multi-claimant test — 10-leaf tree ──────────────────────────
+
+/// Builds a 10-leaf Merkle tree, initialises the contract, and verifies that
+/// every one of the 10 claimants can claim in sequence.
+///
+/// Acceptance criteria:
+///   - 10 distinct addresses and amounts are combined into a valid tree.
+///   - Each of the 10 claims succeeds (no InvalidProof, no AlreadyClaimed).
+///   - After all claims, each claimant's token balance equals their allocated
+///     amount.
+///   - The contract's remaining token balance is exactly 0 (total conservation).
+#[test]
+fn test_ten_claimant_tree_all_claims_succeed() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let token_client = TokenClient::new(&env, &token);
+
+    // ── Build 10 distinct claimants with distinct amounts ─────────────────
+    let claimants: alloc::vec::Vec<Address> = (0..10).map(|_| Address::generate(&env)).collect();
+
+    // Use a variety of amounts to ensure the tree is non-trivial.
+    // The total must equal what we deposit into the contract.
+    let amounts: alloc::vec::Vec<i128> = alloc::vec![
+        100, 200, 300, 400, 500, 600, 700, 800, 900, 1_000,
+    ];
+    let total_deposited: i128 = amounts.iter().sum(); // 5 500
+
+    // ── Build the 10-leaf Merkle tree ─────────────────────────────────────
+    let (root, proofs) = build_n_leaf_tree(&env, &contract_id, &claimants, &amounts);
+
+    // ── Initialise the contract ───────────────────────────────────────────
+    mint(&env, &token, &admin, &admin, total_deposited);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &total_deposited,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    // Confirm starting state.
+    assert_eq!(
+        token_client.balance(&contract_id),
+        total_deposited,
+        "contract must hold all tokens before any claims"
+    );
+
+    // ── Each claimant claims in sequence ─────────────────────────────────
+    let mut sum_claimed: i128 = 0;
+
+    for i in 0..10_usize {
+        // Must not already be claimed.
+        assert!(
+            !client.is_claimed(&claimants[i]),
+            "claimant {i} must not be marked claimed before they claim"
+        );
+
+        // Submit the claim — must succeed without error.
+        client.claim(&claimants[i], &amounts[i], &proofs[i]);
+
+        // Verify the claimed flag is set.
+        assert!(
+            client.is_claimed(&claimants[i]),
+            "claimant {i} must be marked claimed after claim()"
+        );
+
+        // Verify the claimant received exactly their allocation.
+        let balance = token_client.balance(&claimants[i]);
+        assert_eq!(
+            balance,
+            amounts[i],
+            "claimant {i}: expected balance {}, got {balance}",
+            amounts[i]
+        );
+
+        sum_claimed += amounts[i];
+
+        // Token conservation: remaining contract balance must equal
+        // total_deposited minus the sum of all amounts claimed so far.
+        let contract_balance = token_client.balance(&contract_id);
+        let expected_contract_balance = total_deposited - sum_claimed;
+        assert_eq!(
+            contract_balance,
+            expected_contract_balance,
+            "after claim {i}: contract balance ({contract_balance}) \
+             must equal {total_deposited} - {sum_claimed} = {expected_contract_balance}"
+        );
+    }
+
+    // ── Final state: contract must be empty ───────────────────────────────
+    assert_eq!(
+        token_client.balance(&contract_id),
+        0,
+        "after all 10 claims the contract must hold 0 tokens (total conservation)"
+    );
+
+    // ── Confirm the combined claimant balances equal total_deposited ──────
+    let total_received: i128 = claimants
+        .iter()
+        .map(|addr| token_client.balance(addr))
+        .sum();
+    assert_eq!(
+        total_received,
+        total_deposited,
+        "sum of all claimant balances ({total_received}) must equal \
+         total_deposited ({total_deposited})"
+    );
+}
+
+/// A double-claim attempt in a 10-leaf tree is rejected for the address
+/// that already claimed.  All other claimants are unaffected and can still
+/// claim after the failed double-claim.
+#[test]
+fn test_ten_claimant_tree_double_claim_rejected() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+
+    let claimants: alloc::vec::Vec<Address> = (0..10).map(|_| Address::generate(&env)).collect();
+    let amounts: alloc::vec::Vec<i128> = alloc::vec![
+        100, 200, 300, 400, 500, 600, 700, 800, 900, 1_000,
+    ];
+    let total: i128 = amounts.iter().sum();
+
+    let (root, proofs) = build_n_leaf_tree(&env, &contract_id, &claimants, &amounts);
+
+    mint(&env, &token, &admin, &admin, total);
+    client.initialize(&admin, &token, &root, &total, &DEFAULT_EXPIRATION, &None, &None);
+
+    // Claim for the first address.
+    client.claim(&claimants[0], &amounts[0], &proofs[0]);
+
+    // Attempt a double-claim for the same address — must return AlreadyClaimed.
+    let result = client.try_claim(&claimants[0], &amounts[0], &proofs[0]);
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::AlreadyClaimed)),
+        "second claim for claimants[0] must return AlreadyClaimed"
+    );
+
+    // The remaining 9 claimants must still be able to claim.
+    for i in 1..10_usize {
+        client.claim(&claimants[i], &amounts[i], &proofs[i]);
+        assert!(client.is_claimed(&claimants[i]), "claimant {i} must be claimed");
+    }
+}
