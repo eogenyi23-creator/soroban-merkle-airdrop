@@ -77,10 +77,11 @@ Or browse the source directly:
 - [`sdk/src/client.ts`](sdk/src/client.ts) — `createAirdropClient` (RPC client)
 - [`sdk/src/types.ts`](sdk/src/types.ts) — all types, interfaces, and error classes
 
-## Example Script
+## Example Scripts
 
-A runnable end-to-end workflow is in [`examples/full-workflow.ts`](examples/full-workflow.ts).
-It builds a 3-entry Merkle tree, verifies all proofs, and submits (or prints) a claim transaction:
+### End-to-end claim workflow
+
+[`examples/full-workflow.ts`](examples/full-workflow.ts) builds a 3-entry Merkle tree, verifies all proofs, and submits (or prints) a claim transaction:
 
 ```bash
 # Dry-run — no keys required, prints the unsigned transaction XDR
@@ -89,6 +90,29 @@ DRY_RUN=1 npx ts-node examples/full-workflow.ts
 # Live claim against testnet
 CONTRACT_ID=C... SECRET_KEY=S... npx ts-node examples/full-workflow.ts
 ```
+
+### Contract event streaming
+
+[`examples/event-stream.ts`](examples/event-stream.ts) connects to the Soroban RPC server and polls for events emitted by the airdrop contract. It decodes `claimed`, `init`, `reclaimed`, and `paused` events and prints each one with a timestamp, address, and token amount — useful for building dashboards or notification systems.
+
+```bash
+# Stream events from testnet (polls every 5 s by default)
+CONTRACT_ID=C... npx ts-node examples/event-stream.ts
+
+# Stream from a specific ledger, on mainnet, with a custom poll interval
+CONTRACT_ID=C... NETWORK=mainnet START_LEDGER=12345678 POLL_INTERVAL=3000 \
+  npx ts-node examples/event-stream.ts
+```
+
+Available environment variables for the event streamer:
+
+| Variable | Default | Description |
+|---|---|---|
+| `CONTRACT_ID` | — | Deployed airdrop contract address (required) |
+| `NETWORK` | `testnet` | `testnet` or `mainnet` |
+| `START_LEDGER` | latest − 1 | Ledger sequence to start streaming from |
+| `POLL_INTERVAL` | `5000` | Polling interval in milliseconds |
+| `MAX_PAGES` | unlimited | Stop after this many poll iterations |
 
 ## SDK Installation
 
