@@ -1116,3 +1116,93 @@ describe("Issue #114 — contract address (C...) recipients", () => {
     expect(verifyProof(root, CONTRACT_ADDR_1, 5000n, [])).toBe(true);
   });
 });
+
+// ─── Issue #118: Edge-case amount tests for leafHash ─────────────────────────
+//
+// leafHash encodes the amount as a 16-byte big-endian i128 using a hi/lo
+// BigInt split:
+//
+//   hi = amount >> 64n          (signed, written with writeBigInt64BE)
+//   lo = amount & 0xffff...n    (unsigned low 64 bits, written with writeBigUInt64BE)
+//
+// The three tests below exercise the boundary cases that are most likely to
+// expose bugs in that encoding: zero (both words are 0x00), -1 (both words
+// are 0xff…ff in two's-complement), and i128::MAX (hi = 0x7fff…, lo = 0xffff…).
+//
+// Note on contract behaviour:
+//   The Rust contract rejects amount = 0 with AirdropError::ZeroAmount
+//   (see test_zero_amount_claim_fails in contracts/airdrop/src/test.rs).
+//   The TypeScript leafHash function itself does NOT validate the amount —
+//   that guard lives in the contract's claim() entry-point.  These SDK tests
+//   therefore verify only that leafHash produces a well-formed 32-byte hash
+//   without throwing, regardless of whether the contract would accept the value.
+
+describe("Issue #118 — leafHash edge-case amounts", () => {
+  /**
+   * amount = 0n
+   * Both the hi and lo 64-bit words of the i128 encoding are zero.
+   * The contract rejects amount=0 at the claim() entry-point
+   * (AirdropError::ZeroAmount), but leafHash itself must not throw.
+   */
+  it("leafHash(addr, 0n) produces a 32-byte buffer without throwing", () => {
+    const hash = leafHash(CONTRACT_A, ADDR_1, 0n);
+    expect(hash).toBeInstanceOf(Buffer);
+    expect(hash.length).toBe(32);
+  });
+
+  /**
+   * amount = -1n  (negative i128 encoding)
+   * In two's-complement i128, -1 is all 1-bits:
+   *   hi = -1n >> 64n = -1n  → writeBigInt64BE writes 0xff ff ff ff ff ff ff ff
+   *   lo = -1n & 0xffff…n    = 0xffff…n → writeBigUInt64BE writes 0xff ff ff ff ff ff ff ff
+   * The result must be a deterministic 32-byte hash, not an exception.
+   */
+  it("leafHash(addr, -1n) produces a 32-byte buffer without throwing (negative i128 encoding)", () => {
+    const hash = leafHash(CONTRACT_A, ADDR_1, -1n);
+    expect(hash).toBeInstanceOf(Buffer);
+    expect(hash.length).toBe(32);
+  });
+
+  /**
+   * amount = i128::MAX = 2^127 - 1 = 170141183460469231731687303715884105727n
+   * This is the largest representable signed 128-bit integer:
+   *   hi = i128::MAX >> 64n = 0x7fffffffffffffffn  (positive, fits in i64)
+   *   lo = i128::MAX & 0xffff…n = 0xffffffffffffffffn
+   * Both BigInt words fit in their respective signed/unsigned 64-bit encoders.
+   */
+  it("leafHash(addr, i128::MAX) produces a 32-byte buffer without throwing", () => {
+    const I128_MAX = 170141183460469231731687303715884105727n; // 2n ** 127n - 1n
+    const hash = leafHash(CONTRACT_A, ADDR_1, I128_MAX);
+    expect(hash).toBeInstanceOf(Buffer);
+    expect(hash.length).toBe(32);
+  });
+
+  // ── Distinctness checks ──────────────────────────────────────────────────
+
+  it("leafHash with 0n differs from leafHash with 1n (zero is not a no-op)", () => {
+    expect(leafHash(CONTRACT_A, ADDR_1, 0n).toString("hex")).not.toBe(
+      leafHash(CONTRACT_A, ADDR_1, 1n).toString("hex")
+    );
+  });
+
+  it("leafHash with -1n differs from leafHash with 0n", () => {
+    expect(leafHash(CONTRACT_A, ADDR_1, -1n).toString("hex")).not.toBe(
+      leafHash(CONTRACT_A, ADDR_1, 0n).toString("hex")
+    );
+  });
+
+  it("leafHash with -1n differs from leafHash with i128::MAX (different sign bit)", () => {
+    const I128_MAX = 170141183460469231731687303715884105727n;
+    expect(leafHash(CONTRACT_A, ADDR_1, -1n).toString("hex")).not.toBe(
+      leafHash(CONTRACT_A, ADDR_1, I128_MAX).toString("hex")
+    );
+  });
+
+  // ── Stability check ──────────────────────────────────────────────────────
+
+  it("leafHash with -1n is deterministic (same hash on repeated calls)", () => {
+    const h1 = leafHash(CONTRACT_A, ADDR_1, -1n).toString("hex");
+    const h2 = leafHash(CONTRACT_A, ADDR_1, -1n).toString("hex");
+    expect(h1).toBe(h2);
+  });
+});
