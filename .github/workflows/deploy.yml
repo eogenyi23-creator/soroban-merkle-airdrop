@@ -28,6 +28,14 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # ── Mainnet approval gate ─────────────────────────────────────────────────
+    # When deploying to mainnet the job is assigned to the "mainnet" GitHub
+    # Actions environment.  Configure that environment in your repository
+    # (Settings → Environments → mainnet) with one or more required reviewers.
+    # The job will pause here until an authorised reviewer clicks Approve.
+    # Testnet deployments use the "testnet" environment which has no reviewers
+    # configured, so they proceed immediately without manual approval.
+    environment: ${{ inputs.network }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
