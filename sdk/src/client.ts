@@ -22,6 +22,7 @@ import {
 import type { Transaction } from "@stellar/stellar-sdk";
 import type { ClaimProof, ClaimResult, NetworkConfig } from "./types.js";
 import { AirdropContractError, RpcError } from "./types.js";
+import { verifyProof } from "./merkle.js";
 
 /**
  * Create a typed client for an on-chain soroban-merkle-airdrop contract.
@@ -128,6 +129,35 @@ export function createAirdropClient(config: NetworkConfig) {
     return BigInt(scValToNative(result) as number);
   }
 
+  /** Return the number of successful claims so far. */
+  async function claimedCount(): Promise<number> {
+    const result = await simulateRead(contractInst.call("claimed_count"));
+    return scValToNative(result) as number;
+  }
+
+  /**
+   * Fetch the total tokens distributed through successful claims.
+   *
+   * This metric starts at 0 when the airdrop is initialised and grows
+   * by the claimed amount with every successful `claim`, `claim_for`, or
+   * `batch_claim` entry. Use it alongside {@link totalDeposited} to
+   * calculate a progress ratio for dashboards.
+   *
+   * @returns Total claimed amount in base units (stroops for XLM-based tokens).
+   *
+   * @example
+   * ```ts
+   * const claimed = await client.totalClaimed();
+   * const total = await client.totalDeposited();
+   * const pct = Number(claimed * 100n / total);
+   * console.log(`${pct}% of tokens claimed`);
+   * ```
+   */
+  async function totalClaimed(): Promise<bigint> {
+    const result = await simulateRead(contractInst.call("total_claimed"));
+    return BigInt(scValToNative(result) as number);
+  }
+
   /**
    * Fetch the expiration timestamp (Unix seconds) after which unclaimed tokens
    * can be reclaimed by the admin.
@@ -151,6 +181,71 @@ export function createAirdropClient(config: NetworkConfig) {
     const native = scValToNative(result);
     if (native === null || native === undefined) return null;
     return BigInt(native as number);
+  }
+
+  /**
+   * Fetch the contract's current token balance (remaining claimable tokens).
+   *
+   * Queries the SEP-41 token contract for this contract's balance. As
+   * recipients claim tokens the balance decreases from `totalDeposited`.
+   *
+   * @returns Current token balance in base units, or `0n` if the contract
+   *   is not yet initialised.
+   *
+   * @example
+   * ```ts
+   * const balance = await client.remainingBalance();
+   * console.log("Tokens left:", balance.toString());
+   * ```
+   */
+  async function remainingBalance(): Promise<bigint> {
+    const result = await simulateRead(contractInst.call("remaining_balance"));
+    return BigInt(scValToNative(result) as number);
+  }
+
+  /**
+   * Fetch the decimal precision of the airdrop token by querying its SEP-41
+   * `decimals()` function.
+   *
+   * SEP-41 tokens expose a `decimals()` entry point that returns a `u32` value.
+   * For example, a token with `decimals() = 7` represents `1_000_000_0` raw
+   * units as `1.0000000` in display notation.
+   *
+   * @returns Token decimal count as a number, or `null` if the token address
+   *   is not set, the token contract does not implement `decimals()`, or the
+   *   call fails for any reason.
+   *
+   * @example
+   * ```ts
+   * const decimals = await client.tokenDecimals();
+   * if (decimals !== null) {
+   *   const display = formatAmount(rawAmount, decimals);
+   * }
+   * ```
+   */
+  async function tokenDecimals(): Promise<number | null> {
+    // First we need to know the token contract address.
+    let tokenAddress: string;
+    try {
+      const tokenResult = await simulateRead(contractInst.call("token"));
+      const native = scValToNative(tokenResult);
+      if (!native) return null;
+      // native is an Address object — convert to string
+      tokenAddress = native.toString();
+    } catch {
+      return null;
+    }
+
+    // Now query decimals() on the token contract directly.
+    try {
+      const tokenContract = new Contract(tokenAddress);
+      const result = await simulateRead(tokenContract.call("decimals"));
+      const native = scValToNative(result);
+      if (native === null || native === undefined) return null;
+      return Number(native);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -180,12 +275,11 @@ export function createAirdropClient(config: NetworkConfig) {
    * console.log("Claimed in tx:", result.txHash);
    * ```
    */
-  async function claim(
+  async function buildClaimTx(
     claimProof: ClaimProof,
-    signerSecretKey: string
-  ): Promise<ClaimResult> {
-    const keypair = Keypair.fromSecret(signerSecretKey);
-    const sourceAccount = await server.getAccount(keypair.publicKey());
+    signerPublicKey: string
+  ) {
+    const sourceAccount = await server.getAccount(signerPublicKey);
 
     // Convert proof array of hex strings → ScVal vec of BytesN<32>
     const proofScVal = xdr.ScVal.scvVec(
@@ -202,13 +296,70 @@ export function createAirdropClient(config: NetworkConfig) {
       .addOperation(
         contractInst.call(
           "claim",
-          new Address(keypair.publicKey()).toScVal(),
+          new Address(signerPublicKey).toScVal(),
           nativeToScVal(claimProof.amount, { type: "i128" }),
           proofScVal
         )
       )
       .setTimeout(30)
       .build();
+
+    return tx;
+  }
+
+  /**
+   * Simulate a claim transaction and return the estimated fee and resource
+   * usage without submitting anything on-chain.
+   *
+   * @param claimProof      - The proof package from `buildMerkleTree`.
+   * @param signerPublicKey - The claimant's Stellar public key (G...).
+   * @returns               Fee estimate in stroops and Soroban resource details.
+   */
+  async function simulateClaim(
+    claimProof: ClaimProof,
+    signerPublicKey: string
+  ): Promise<SimulateClaimResult> {
+    const tx = await buildClaimTx(claimProof, signerPublicKey);
+
+    const simResult = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new Error(`Simulation failed: ${simResult.error}`);
+    }
+
+    const successResult = simResult as rpc.Api.SimulateTransactionSuccessResponse;
+
+    // The minResourceFee from simulation is the Soroban resource fee.
+    // Add it to the base fee to get the total estimated fee.
+    const resourceFee = BigInt(successResult.minResourceFee ?? "0");
+    const baseFee = BigInt(BASE_FEE);
+    const totalFee = (baseFee + resourceFee).toString();
+
+    // Extract resource consumption details from the simulation footprint.
+    const resources = successResult.transactionData
+      ? extractResources(successResult.transactionData)
+      : {};
+
+    return {
+      fee: totalFee,
+      resources,
+    };
+  }
+
+  /**
+   * Submit a claim transaction.
+   *
+   * Internally reuses the same simulation logic as `simulateClaim` to avoid
+   * duplication — the simulation result is used to assemble the final tx.
+   *
+   * @param claimProof      - The proof package from `buildMerkleTree`.
+   * @param signerSecretKey - The claimant's Stellar secret key (S...).
+   */
+  async function claim(
+    claimProof: ClaimProof,
+    signerSecretKey: string
+  ): Promise<ClaimResult> {
+    const keypair = Keypair.fromSecret(signerSecretKey);
+    const tx = await buildClaimTx(claimProof, keypair.publicKey());
 
     const simResult = await server.simulateTransaction(tx);
     if (rpc.Api.isSimulationError(simResult)) {
@@ -374,6 +525,34 @@ export function createAirdropClient(config: NetworkConfig) {
     }
   }
 
+  /**
+   * Verify a claim proof against the on-chain Merkle root.
+   *
+   * Fetches the current Merkle root from the contract and verifies the proof
+   * locally using {@link verifyProof} from the SDK's Merkle module. Useful for
+   * confirming a proof is valid before submitting a claim transaction.
+   *
+   * @param claimProof - The proof package for the claimant (from `buildMerkleTree`).
+   * @returns `true` if the proof is valid against the on-chain root,
+   *   `false` if it is invalid **or** if the contract has not been initialised
+   *   (i.e. `merkleRoot()` returns `null`).
+   *
+   * @example
+   * ```ts
+   * const valid = await client.verifyClaimProof(proof);
+   * if (!valid) {
+   *   console.error("Proof is invalid — tree may be for a different contract");
+   * }
+   * ```
+   */
+  async function verifyClaimProof(claimProof: ClaimProof): Promise<boolean> {
+    const root = await merkleRoot();
+    if (root === null) {
+      return false;
+    }
+    return verifyProof(root, config.contractId, claimProof.address, claimProof.amount, claimProof.proof);
+  }
+
   // ─── Internal helpers ──────────────────────────────────────────────────────
 
   async function simulateRead(operation: xdr.Operation): Promise<xdr.ScVal> {
@@ -394,6 +573,34 @@ export function createAirdropClient(config: NetworkConfig) {
     return (simResult as rpc.Api.SimulateTransactionSuccessResponse).result!.retval;
   }
 
+  /**
+   * Extract a human-readable resource summary from the simulation's
+   * SorobanTransactionData XDR object.
+   */
+  function extractResources(
+    transactionData: rpc.Api.SimulateTransactionSuccessResponse["transactionData"]
+  ): SimulateClaimResult["resources"] {
+    try {
+      // transactionData may be an XDR object or base64 string depending on SDK version
+      const sorobanData =
+        typeof transactionData === "string"
+          ? xdr.SorobanTransactionData.fromXDR(transactionData, "base64")
+          : (transactionData as unknown as xdr.SorobanTransactionData);
+
+      const resources = sorobanData.resources();
+      return {
+        instructions: resources.instructions(),
+        readBytes: resources.readBytes(),
+        writeBytes: resources.writeBytes(),
+        readEntries: resources.footprint().readOnly().length,
+        writeEntries: resources.footprint().readWrite().length,
+      };
+    } catch {
+      // If extraction fails (e.g., SDK version differences), return an empty object
+      return {};
+    }
+  }
+
   function sleep(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms));
   }
@@ -403,10 +610,14 @@ export function createAirdropClient(config: NetworkConfig) {
     isActive,
     merkleRoot,
     totalDeposited,
+    totalClaimed,
     expiration,
+    remainingBalance,
+    tokenDecimals,
     claim,
     buildClaimTransaction,
     submitSignedTransaction,
+    verifyClaimProof,
   };
 }
 

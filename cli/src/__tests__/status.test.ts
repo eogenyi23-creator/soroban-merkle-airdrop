@@ -26,6 +26,8 @@ const mockClient = {
   totalDeposited: vi.fn(),
   expiration: vi.fn(),
   isClaimed: vi.fn(),
+  remainingBalance: vi.fn(),
+  tokenDecimals: vi.fn(),
 };
 
 vi.mock("@soroban-merkle-airdrop/sdk", () => ({
@@ -39,6 +41,14 @@ vi.mock("@soroban-merkle-airdrop/sdk", () => ({
       rpcUrl: "https://mainnet.sorobanrpc.com",
       networkPassphrase: "Public Global Stellar Network ; September 2015",
     },
+  },
+  // Issue #58: formatAmount must be exported from the mock so status.ts can use it.
+  formatAmount: (raw: bigint, decimals: number): string => {
+    if (decimals === 0) return raw.toString();
+    const factor = 10n ** BigInt(decimals);
+    const whole = raw / factor;
+    const fraction = raw % factor;
+    return `${whole}.${fraction.toString().padStart(decimals, "0")}`;
   },
 }));
 
@@ -127,6 +137,8 @@ describe("status command — runStatusAction", () => {
     mockClient.totalDeposited.mockResolvedValue(15000n);
     mockClient.expiration.mockResolvedValue(9999999999n); // far future
     mockClient.isClaimed.mockResolvedValue(false);
+    mockClient.remainingBalance.mockResolvedValue(10000n);
+    mockClient.tokenDecimals.mockResolvedValue(null);
     delete process.env["AIRDROP_CONTRACT_ID"];
   });
 
@@ -267,5 +279,279 @@ describe("status command — runStatusAction", () => {
     expect(createAirdropClient).toHaveBeenCalledWith(
       expect.objectContaining({ contractId: CONTRACT_ID })
     );
+  });
+});
+
+// ─── Issue #68: --rpc-url forwarding ────────────────────────────────────────
+
+describe("status command — Issue #68: --rpc-url forwarding", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockClient.isActive.mockResolvedValue(true);
+    mockClient.merkleRoot.mockResolvedValue(MERKLE_ROOT);
+    mockClient.totalDeposited.mockResolvedValue(0n);
+    mockClient.expiration.mockResolvedValue(null);
+    mockClient.remainingBalance.mockResolvedValue(0n);
+    mockClient.tokenDecimals.mockResolvedValue(null);
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  afterEach(() => {
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  it("passes a custom --rpc-url to createAirdropClient instead of the preset", async () => {
+    const { createAirdropClient } = await import("@soroban-merkle-airdrop/sdk");
+    const customRpcUrl = "https://my-custom-rpc.example.com";
+
+    await run(
+      {},
+      { contractId: CONTRACT_ID, network: "testnet", rpcUrl: customRpcUrl }
+    );
+
+    expect(createAirdropClient).toHaveBeenCalledWith(
+      expect.objectContaining({ rpcUrl: customRpcUrl })
+    );
+  });
+
+  it("uses the preset rpcUrl when --rpc-url is not provided", async () => {
+    const { createAirdropClient } = await import("@soroban-merkle-airdrop/sdk");
+
+    await run({}, { contractId: CONTRACT_ID, network: "testnet" });
+
+    expect(createAirdropClient).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rpcUrl: "https://soroban-testnet.stellar.org",
+      })
+    );
+  });
+
+  it("does not include rpcUrl override when globalOpts.rpcUrl is undefined", async () => {
+    const { createAirdropClient } = await import("@soroban-merkle-airdrop/sdk");
+
+    await run({}, { contractId: CONTRACT_ID });
+
+    // The call should still succeed and use the network preset rpcUrl
+    expect(createAirdropClient).toHaveBeenCalled();
+    const callArg = (createAirdropClient as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as Record<string, unknown>;
+    // Should NOT be undefined — it comes from the preset
+    expect(typeof callArg["rpcUrl"]).toBe("string");
+  });
+});
+
+// ─── Issue #67: --json output flag ───────────────────────────────────────────
+
+describe("status command — Issue #67: --json output flag", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockClient.isActive.mockResolvedValue(true);
+    mockClient.merkleRoot.mockResolvedValue(MERKLE_ROOT);
+    mockClient.totalDeposited.mockResolvedValue(15000n);
+    mockClient.expiration.mockResolvedValue(9999999999n);
+    mockClient.isClaimed.mockResolvedValue(false);
+    mockClient.remainingBalance.mockResolvedValue(10000n);
+    mockClient.tokenDecimals.mockResolvedValue(null);
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  afterEach(() => {
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  it("outputs valid JSON when --json is set", async () => {
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID, network: "testnet" }
+    );
+
+    // There should be exactly one line of JSON output
+    const jsonLine = lines.find((l) => l.trimStart().startsWith("{"));
+    expect(jsonLine).toBeDefined();
+    expect(() => JSON.parse(jsonLine!)).not.toThrow();
+  });
+
+  it("JSON output contains all required keys", async () => {
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID, network: "testnet" }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+
+    expect(parsed).toHaveProperty("contractId", CONTRACT_ID);
+    expect(parsed).toHaveProperty("network", "testnet");
+    expect(parsed).toHaveProperty("active");
+    expect(parsed).toHaveProperty("root");
+    expect(parsed).toHaveProperty("deposited");
+    expect(parsed).toHaveProperty("remaining");
+    expect(parsed).toHaveProperty("expiration");
+    expect(parsed).toHaveProperty("decimals");
+  });
+
+  it("JSON active field is boolean true when contract is active", async () => {
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.active).toBe(true);
+  });
+
+  it("JSON active field is boolean false when contract is inactive", async () => {
+    mockClient.isActive.mockResolvedValue(false);
+
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.active).toBe(false);
+  });
+
+  it("JSON root is null when contract is not initialized", async () => {
+    mockClient.merkleRoot.mockResolvedValue(null);
+
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.root).toBeNull();
+  });
+
+  it("JSON expiration is null when not set", async () => {
+    mockClient.expiration.mockResolvedValue(null);
+
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.expiration).toBeNull();
+  });
+
+  it("JSON includes address and claimed fields when --address is provided", async () => {
+    mockClient.isClaimed.mockResolvedValue(true);
+
+    const { lines } = await run(
+      { json: true, address: TEST_ADDRESS },
+      { contractId: CONTRACT_ID }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.address).toBe(TEST_ADDRESS);
+    expect(parsed.claimed).toBe(true);
+  });
+
+  it("does not include address/claimed keys when no --address is provided", async () => {
+    const { lines } = await run(
+      { json: true },
+      { contractId: CONTRACT_ID }
+    );
+
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed).not.toHaveProperty("address");
+    expect(parsed).not.toHaveProperty("claimed");
+  });
+});
+
+// ─── Issue #57: remaining_balance display ─────────────────────────────────────
+
+describe("status command — Issue #57: remaining balance", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockClient.isActive.mockResolvedValue(true);
+    mockClient.merkleRoot.mockResolvedValue(MERKLE_ROOT);
+    mockClient.totalDeposited.mockResolvedValue(15000n);
+    mockClient.expiration.mockResolvedValue(9999999999n);
+    mockClient.isClaimed.mockResolvedValue(false);
+    mockClient.remainingBalance.mockResolvedValue(9000n);
+    mockClient.tokenDecimals.mockResolvedValue(null);
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  afterEach(() => {
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  it("displays remaining balance in human-readable output", async () => {
+    const { lines } = await run({}, { contractId: CONTRACT_ID });
+    const all = lines.join("\n");
+    expect(all).toContain("9000");
+    expect(all.toLowerCase()).toContain("remaining");
+  });
+
+  it("JSON output includes remaining field", async () => {
+    const { lines } = await run({ json: true }, { contractId: CONTRACT_ID });
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.remaining).toBe("9000");
+  });
+
+  it("continues gracefully when remainingBalance throws", async () => {
+    mockClient.remainingBalance.mockRejectedValue(new Error("not found"));
+    const { lines, processExited } = await run({}, { contractId: CONTRACT_ID });
+    expect(processExited).toBe(false);
+    // Should still display other fields
+    expect(lines.join("\n")).toContain(CONTRACT_ID);
+  });
+});
+
+// ─── Issue #58: tokenDecimals formatted output ────────────────────────────────
+
+describe("status command — Issue #58: token decimals formatting", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockClient.isActive.mockResolvedValue(true);
+    mockClient.merkleRoot.mockResolvedValue(MERKLE_ROOT);
+    mockClient.totalDeposited.mockResolvedValue(1_000_000_0n);
+    mockClient.expiration.mockResolvedValue(9999999999n);
+    mockClient.isClaimed.mockResolvedValue(false);
+    mockClient.remainingBalance.mockResolvedValue(5_000_000_0n);
+    mockClient.tokenDecimals.mockResolvedValue(7);
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  afterEach(() => {
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  it("shows formatted amount when decimals are available", async () => {
+    const { lines } = await run({}, { contractId: CONTRACT_ID });
+    const all = lines.join("\n");
+    // 10_000_000 raw with 7 decimals = 1.0000000
+    expect(all).toContain("1.0000000");
+  });
+
+  it("shows raw fallback when decimals returns null", async () => {
+    mockClient.tokenDecimals.mockResolvedValue(null);
+    const { lines } = await run({}, { contractId: CONTRACT_ID });
+    const all = lines.join("\n");
+    // Should show raw number, no decimal point for deposited
+    expect(all).toContain("10000000");
+  });
+
+  it("JSON output includes decimals field", async () => {
+    const { lines } = await run({ json: true }, { contractId: CONTRACT_ID });
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.decimals).toBe(7);
+  });
+
+  it("JSON decimals is null when tokenDecimals() returns null", async () => {
+    mockClient.tokenDecimals.mockResolvedValue(null);
+    const { lines } = await run({ json: true }, { contractId: CONTRACT_ID });
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.decimals).toBeNull();
+  });
+
+  it("continues gracefully when tokenDecimals throws", async () => {
+    mockClient.tokenDecimals.mockRejectedValue(new Error("SEP-41 not supported"));
+    const { lines, processExited } = await run({}, { contractId: CONTRACT_ID });
+    expect(processExited).toBe(false);
+    expect(lines.join("\n")).toContain(CONTRACT_ID);
   });
 });

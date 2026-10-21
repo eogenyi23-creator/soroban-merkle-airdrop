@@ -1,0 +1,21 @@
+# CODEOWNERS
+#
+# Each line is a file pattern followed by one or more owners.
+# The last matching pattern takes precedence.
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# ── Catch-all: repo owner reviews everything by default ──────────────────────
+*                           @eogenyi23-creator
+
+# ── Soroban smart contracts (Rust) ───────────────────────────────────────────
+/contracts/                 @eogenyi23-creator
+
+# ── TypeScript SDK and CLI ───────────────────────────────────────────────────
+/sdk/                       @eogenyi23-creator
+/cli/                       @eogenyi23-creator
+
+# ── Next.js web frontend ──────────────────────────────────────────────────────
+/web/                       @eogenyi23-creator
+
+# ── CI/CD and GitHub Actions workflows ───────────────────────────────────────
+/.github/workflows/         @eogenyi23-creator

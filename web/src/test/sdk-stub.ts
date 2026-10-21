@@ -47,6 +47,7 @@ export function createAirdropClient(_config: {
 
 export function verifyProof(
   _root: string,
+  _contractId: string,
   _address: string,
   _amount: bigint,
   _proof: string[]
@@ -55,6 +56,7 @@ export function verifyProof(
 }
 
 export function buildMerkleTree(
+  _contractId: string,
   _entries: Array<{ address: string; amount: bigint }>
 ): { root: string; proofs: Record<string, ClaimProof> } {
   throw new Error("stub — should be mocked in tests");

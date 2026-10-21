@@ -1,0 +1,234 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Ensure only one release workflow runs at a time for the same tag.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── Gate: all CI checks must pass before we release ─────────────────────────
+  ci:
+    name: Wait for CI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CI status for this commit
+        uses: lewagon/wait-on-check-action@v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          check-name: 'Contract (Rust)'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 20
+          allowed-conclusions: success
+
+      - name: Check SDK CI status for this commit
+        uses: lewagon/wait-on-check-action@v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          check-name: 'SDK + CLI (TypeScript)'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 20
+          allowed-conclusions: success
+
+  # ── Build contract WASM ──────────────────────────────────────────────────────
+  build-contract:
+    name: Build Contract WASM
+    runs-on: ubuntu-latest
+    needs: ci
+    outputs:
+      wasm-sha256: ${{ steps.wasm-hash.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build WASM (release)
+        run: |
+          cargo build \
+            --manifest-path contracts/airdrop/Cargo.toml \
+            --target wasm32v1-none \
+            --release
+
+      - name: Compute WASM SHA-256
+        id: wasm-hash
+        run: |
+          WASM=target/wasm32v1-none/release/soroban_merkle_airdrop.wasm
+          SHA256=$(sha256sum "$WASM" | awk '{print $1}')
+          SIZE_BYTES=$(wc -c < "$WASM")
+          SIZE_KB=$(echo "scale=2; $SIZE_BYTES / 1024" | bc)
+          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
+          echo "WASM SHA-256 : ${SHA256}"
+          echo "WASM size    : ${SIZE_BYTES} bytes (${SIZE_KB} KB)"
+
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: soroban_merkle_airdrop_wasm
+          path: target/wasm32v1-none/release/soroban_merkle_airdrop.wasm
+          retention-days: 90
+
+  # ── Build & publish SDK to npm ───────────────────────────────────────────────
+  publish-sdk:
+    name: Publish SDK to npm
+    runs-on: ubuntu-latest
+    needs: ci
+    permissions:
+      contents: read
+      id-token: write   # required for npm provenance
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: '9'
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        run: echo "store=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v6
+        with:
+          path: ${{ steps.pnpm-cache.outputs.store }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build SDK
+        run: pnpm build
+        working-directory: sdk
+
+      - name: Set SDK version from tag
+        # Strip the leading 'v' from the tag to get a semver string.
+        # e.g. tag v0.2.1 → npm version 0.2.1
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Publishing SDK version: ${VERSION}"
+          npm version "${VERSION}" --no-git-tag-version
+        working-directory: sdk
+
+      - name: Publish SDK
+        run: npm publish --provenance --access public
+        working-directory: sdk
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # ── Create GitHub Release ────────────────────────────────────────────────────
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-contract, publish-sdk]
+    permissions:
+      contents: write   # required to create releases and upload assets
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Fetch full history so we can build a changelog from git log.
+          fetch-depth: 0
+
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: soroban_merkle_airdrop_wasm
+          path: release-assets
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Determine the previous tag to build a range-based changelog.
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${CURRENT_TAG}$" | head -n1)
+
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${CURRENT_TAG}"
+            echo "Changelog from ${PREV_TAG} → ${CURRENT_TAG}"
+          else
+            RANGE="${CURRENT_TAG}"
+            echo "First release — no previous tag found."
+          fi
+
+          # Build a simple conventional-commit-style changelog.
+          # Group commits by type prefix (feat, fix, docs, chore, etc.).
+          COMMITS=$(git log "${RANGE}" --pretty=format:"- %s (%h)" --no-merges 2>/dev/null || \
+                    git log "${CURRENT_TAG}" --pretty=format:"- %s (%h)" --no-merges)
+
+          {
+            echo "CHANGELOG<<EOF"
+            echo "## What's Changed"
+            echo ""
+            if [ -n "$PREV_TAG" ]; then
+              echo "**Full diff:** [\`${PREV_TAG}..${CURRENT_TAG}\`](https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${CURRENT_TAG})"
+              echo ""
+            fi
+            echo "${COMMITS}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Rename WASM with version
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          mv release-assets/soroban_merkle_airdrop.wasm \
+             "release-assets/soroban_merkle_airdrop_${VERSION}.wasm"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Release ${{ github.ref_name }}"
+          body: |
+            ## soroban-merkle-airdrop ${{ github.ref_name }}
+
+            ${{ steps.changelog.outputs.CHANGELOG }}
+
+            ---
+
+            ## Contract WASM
+
+            | | |
+            |---|---|
+            | **File** | `soroban_merkle_airdrop_${{ github.ref_name }}.wasm` |
+            | **SHA-256** | `${{ needs.build-contract.outputs.wasm-sha256 }}` |
+
+            Upload the WASM to Stellar and get the on-chain hash:
+
+            ```bash
+            stellar contract upload \
+              --network mainnet \
+              --source deployer \
+              --wasm soroban_merkle_airdrop_${{ github.ref_name }}.wasm
+            ```
+
+            ## SDK
+
+            ```bash
+            npm install @soroban-merkle-airdrop/sdk@${{ github.ref_name }}
+            # or
+            pnpm add @soroban-merkle-airdrop/sdk@${{ github.ref_name }}
+            ```
+
+            Published to npm: [`@soroban-merkle-airdrop/sdk`](https://www.npmjs.com/package/@soroban-merkle-airdrop/sdk)
+          files: |
+            release-assets/soroban_merkle_airdrop_${{ github.ref_name }}.wasm
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

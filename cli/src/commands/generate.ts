@@ -10,6 +10,16 @@
  *   - Amount must be a non-empty, non-whitespace string that parses as a
  *     positive integer (BigInt > 0).
  *   - Clear, line-numbered error messages are emitted for any invalid row.
+ *
+ * Issue #70: Auto-detect and skip CSV header row.
+ *   - If the first non-comment, non-blank line has "address" as its first
+ *     field (case-insensitive) it is treated as a header and skipped.
+ *   - --has-header forces header skipping even when auto-detection would
+ *     not trigger (e.g. if the first field is not exactly "address").
+ *
+ * Issue #67: --json flag.
+ *   - When --json is passed, the tree JSON is printed to stdout and the
+ *     spinner / coloured output is suppressed.
  */
 
 import { Command } from "commander";
@@ -18,7 +28,7 @@ import { resolve } from "path";
 import chalk from "chalk";
 import ora from "ora";
 import { StrKey } from "@stellar/stellar-sdk";
-import { buildMerkleTree } from "@soroban-merkle-airdrop/sdk";
+import { buildMerkleTree, formatAmount } from "@soroban-merkle-airdrop/sdk";
 import type { AirdropEntry } from "@soroban-merkle-airdrop/sdk";
 
 /**
@@ -29,21 +39,54 @@ function isValidStellarAddress(addr: string): boolean {
 }
 
 /**
+ * Maximum allowed length (characters) for a single CSV line.
+ * Lines exceeding this limit are rejected to prevent resource exhaustion
+ * from pathologically large inputs.
+ */
+export const MAX_LINE_LENGTH = 200;
+
+/**
+ * Maximum allowed amount value: 2^127 - 1 (max i128 on Soroban).
+ * Amounts at or above 2^127 cannot be stored in the contract.
+ */
+export const MAX_AMOUNT = (2n ** 127n) - 1n;
+
+/**
+ * Regex that matches a valid decimal integer string:
+ *   - Optional leading minus sign
+ *   - One or more ASCII digits
+ *   - No whitespace, separators, exponents, or other characters
+ */
+const NUMERIC_RE = /^-?\d+$/;
+
+/**
  * Parse and validate a single CSV data line.
  * Returns an `AirdropEntry` on success, or throws an Error with a human-readable
  * message that includes the 1-based line number within the original file.
+ *
+ * Validation order:
+ *   1. Line length ≤ MAX_LINE_LENGTH characters
+ *   2. Address is non-empty and a valid Stellar strkey
+ *   3. Amount is non-empty, numeric-only, > 0, and < 2^127
  *
  * @param rawLine  - The original untrimmed CSV line (for error context).
  * @param lineNum  - 1-based line number in the source file (used in error messages).
  */
 export function parseAndValidateLine(rawLine: string, lineNum: number): AirdropEntry {
+  // 1. Reject lines that are too long before doing any further parsing.
+  if (rawLine.length > MAX_LINE_LENGTH) {
+    throw new Error(
+      `Line ${lineNum}: line too long (${rawLine.length} chars, max ${MAX_LINE_LENGTH})`
+    );
+  }
+
   const trimmed = rawLine.trim();
 
   const parts = trimmed.split(",");
   const address = parts[0]?.trim() ?? "";
   const amountRaw = parts[1]?.trim() ?? "";
 
-  // Validate address
+  // 2. Validate address
   if (!address) {
     throw new Error(`Line ${lineNum}: address is empty`);
   }
@@ -51,23 +94,50 @@ export function parseAndValidateLine(rawLine: string, lineNum: number): AirdropE
     throw new Error(`Line ${lineNum}: invalid Stellar address "${address}"`);
   }
 
-  // Validate amount — must be present and non-whitespace
+  // 3. Validate amount
+
+  // Must be present and non-whitespace
   if (!amountRaw) {
     throw new Error(`Line ${lineNum}: amount is empty or whitespace-only`);
   }
 
-  let amount: bigint;
-  try {
-    amount = BigInt(amountRaw);
-  } catch {
-    throw new Error(`Line ${lineNum}: amount "${amountRaw}" is not a valid integer`);
+  // Must contain only digits (optionally preceded by a minus sign).
+  // This check happens *before* BigInt() so we get a clear error message
+  // instead of "SyntaxError: Cannot convert X to a BigInt".
+  if (!NUMERIC_RE.test(amountRaw)) {
+    throw new Error(
+      `Line ${lineNum}: amount "${amountRaw}" is not a valid integer (only digits are allowed)`
+    );
   }
+
+  // Safe to call BigInt() now — we know the string is syntactically valid.
+  const amount = BigInt(amountRaw);
 
   if (amount <= 0n) {
     throw new Error(`Line ${lineNum}: amount must be greater than zero, got "${amountRaw}"`);
   }
 
+  // Upper bound: must fit in a Soroban i128 (< 2^127)
+  if (amount > MAX_AMOUNT) {
+    throw new Error(
+      `Line ${lineNum}: amount "${amountRaw}" exceeds the maximum allowed value (2^127 - 1)`
+    );
+  }
+
   return { address, amount };
+}
+
+/**
+ * Detect whether `line` looks like a CSV header row.
+ *
+ * Returns `true` when the first comma-delimited field, trimmed and
+ * lower-cased, equals `"address"`.
+ *
+ * @param line - The raw CSV line to inspect.
+ */
+export function isHeaderRow(line: string): boolean {
+  const firstField = line.split(",")[0]?.trim().toLowerCase() ?? "";
+  return firstField === "address";
 }
 
 /**
@@ -81,8 +151,25 @@ export function makeGenerateCommand(): Command {
     .description("Build a Merkle tree from a CSV airdrop list")
     .requiredOption("-i, --input <file>", "CSV file: address,amount (one per line)")
     .requiredOption("-o, --output <file>", "Output JSON file for Merkle tree + proofs")
+    .requiredOption(
+      "-c, --contract-id <address>",
+      "Deployed airdrop contract address (C...) — included as domain separator in leaf hashes"
+    )
+    .option("--has-header", "Force-skip the first data row as a CSV header")
+    .option("--json", "Print tree JSON to stdout instead of writing to --output (suppresses spinner)")
+    .option("--decimals <n>", "Token decimal places for human-readable amount display (e.g. 7 for XLM)")
     .action(async (opts) => {
-      const spinner = ora("Reading airdrop list...").start();
+      const jsonMode: boolean = opts.json ?? false;
+
+      // In JSON mode suppress the spinner so stdout stays clean.
+      const spinner = jsonMode
+        ? {
+            start: () => spinner,
+            succeed: () => {},
+            fail: (msg: string) => { console.error(msg); },
+            text: "",
+          }
+        : ora("Reading airdrop list...").start();
 
       try {
         const csv = await readFile(resolve(opts.input), "utf-8");
@@ -91,6 +178,7 @@ export function makeGenerateCommand(): Command {
 
         const lines = csv.split("\n");
         let lineNum = 0;
+        let headerSkipped = false;
 
         for (const line of lines) {
           lineNum++;
@@ -98,6 +186,16 @@ export function makeGenerateCommand(): Command {
 
           // Skip blank lines and comments
           if (!trimmed || trimmed.startsWith("#")) continue;
+
+          // Issue #70: skip header row.
+          // --has-header: always skip the first data line.
+          // Auto-detect: skip if first field is "address" (case-insensitive).
+          if (!headerSkipped) {
+            if (opts.hasHeader || isHeaderRow(trimmed)) {
+              headerSkipped = true;
+              continue;
+            }
+          }
 
           try {
             entries.push(parseAndValidateLine(line, lineNum));
@@ -108,7 +206,9 @@ export function makeGenerateCommand(): Command {
 
         // Report all validation errors at once before aborting
         if (errors.length > 0) {
-          spinner.fail(chalk.red(`Found ${errors.length} validation error(s) in ${opts.input}:`));
+          (spinner as { fail: (msg: string) => void }).fail(
+            chalk.red(`Found ${errors.length} validation error(s) in ${opts.input}:`)
+          );
           for (const e of errors) {
             console.error(`  ${chalk.red("✖")} ${e}`);
           }
@@ -116,17 +216,23 @@ export function makeGenerateCommand(): Command {
         }
 
         if (entries.length === 0) {
-          spinner.fail(chalk.red("CSV contains no valid entries"));
+          (spinner as { fail: (msg: string) => void }).fail(
+            chalk.red("CSV contains no valid entries")
+          );
           process.exit(1);
         }
 
-        spinner.text = `Building Merkle tree for ${entries.length} entries...`;
-        const { root, proofs } = buildMerkleTree(entries);
+        (spinner as { text: string }).text = `Building Merkle tree for ${entries.length} entries...`;
+        const { root, proofs } = buildMerkleTree(opts.contractId as string, entries);
+
+        const totalRaw = entries.reduce((s, e) => s + e.amount, 0n);
+        const decimals: number | null =
+          opts.decimals !== undefined ? parseInt(opts.decimals as string, 10) : null;
 
         const output = {
           root,
           totalEntries: entries.length,
-          totalAmount: entries.reduce((s, e) => s + e.amount, 0n).toString(),
+          totalAmount: totalRaw.toString(),
           generatedAt: new Date().toISOString(),
           proofs: Object.fromEntries(
             [...proofs.entries()].map(([addr, p]) => [
@@ -136,13 +242,29 @@ export function makeGenerateCommand(): Command {
           ),
         };
 
+        // Issue #67: --json mode — print to stdout, skip file write.
+        if (jsonMode) {
+          console.log(JSON.stringify(output, null, 2));
+          return;
+        }
+
         await writeFile(resolve(opts.output), JSON.stringify(output, null, 2));
-        spinner.succeed(chalk.green(`Merkle tree generated!`));
+        (spinner as ReturnType<typeof ora>).succeed(chalk.green(`Merkle tree generated!`));
         console.log(`\n  ${chalk.bold("Root:")}    ${chalk.cyan(root)}`);
         console.log(`  ${chalk.bold("Entries:")} ${entries.length}`);
+
+        // Issue #58: show formatted total when --decimals is provided.
+        if (decimals !== null && !isNaN(decimals)) {
+          console.log(
+            `  ${chalk.bold("Total:")}   ${formatAmount(totalRaw, decimals)} (${totalRaw.toString()} raw)`
+          );
+        } else {
+          console.log(`  ${chalk.bold("Total:")}   ${totalRaw.toString()}`);
+        }
+
         console.log(`  ${chalk.bold("Output:")}  ${opts.output}\n`);
       } catch (err) {
-        spinner.fail(`Error: ${(err as Error).message}`);
+        (spinner as { fail: (msg: string) => void }).fail(`Error: ${(err as Error).message}`);
         process.exit(1);
       }
     });

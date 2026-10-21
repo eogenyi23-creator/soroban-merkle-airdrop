@@ -249,6 +249,94 @@ permissionless, and a pinned leaf-hash vector. Not covered: proof forgery with
 a fabricated root, behaviour of a malicious SEP-41 token, archival/restore of a
 `Claimed` marker, and event contents (tracked separately).
 
+## 9. Same-network re-deployment replay attack
+
+**Status: accepted risk — mitigated by operational practice (unique root per deployment).**
+
+### Attack description
+
+If the organiser deploys the same WASM with the same Merkle root twice — either
+intentionally or by mistake — both contract instances are independently valid
+claim targets. A recipient who claims from contract A can also claim from
+contract B using the same proof, because:
+
+- The Merkle leaf pre-image is `SHA-256(SHA-256(strkey_bytes) ++ amount_be16)`
+  and contains **no contract-address binding**.
+- `DataKey::Claimed(claimant)` is stored per-contract; the second contract has
+  no knowledge of claims made against the first.
+
+This is not an attack on either individual contract — both behave correctly in
+isolation. The threat is against the **total token supply**: if the organiser
+funded both deployments, recipients can drain both.
+
+### Scope
+
+- **Same token, different contract addresses**: the root is valid in both.
+- **Cross-network (testnet ↔ mainnet)**: an additional concern because both
+  networks share the same WASM bytecode and, if the organiser is not careful,
+  the same Merkle root. Network passphrase separation in Stellar does not
+  affect on-chain contract storage.
+- **Different tokens, same root**: still a double-payout risk if both tokens
+  have value.
+
+### Why mitigation (binding the contract address into the leaf) was not chosen
+
+The alternative — including the contract address in the leaf hash:
+
+```
+leaf = SHA-256( SHA-256(strkey_bytes(address)) ++ amount_be16 ++ contract_address_bytes )
+```
+
+— would require a synchronized change in both `contracts/airdrop/src/merkle.rs`
+and `sdk/src/merkle.ts`, a new WASM deployment, a new tree generation run (the
+root changes), and would add a two-step deployment ceremony: deploy first, note
+the contract address, then generate the tree. It also precludes generating the
+tree before knowing the contract address. The cost-benefit is unfavourable when
+the risk can be eliminated operationally.
+
+### Accepted risk and required mitigations
+
+The contract does **not** bind the leaf to its own address. This is accepted on
+the following conditions:
+
+1. **Each deployment MUST use a unique Merkle root.** The tree SHOULD include
+   at least one deployment-specific field (e.g. a nonce, a timestamp, or a
+   deployment description embedded as metadata) so that a root generated for
+   one deployment is not reusable for another. The simplest approach is to
+   include a "campaign" label in the off-chain tree input and document it in
+   the deployment record.
+
+2. **Never re-deploy with the same root.** If a deployment fails and must be
+   retried, generate a fresh tree before re-deploying. Do not reuse the root
+   from the failed deployment.
+
+3. **The organiser must deposit the correct total only once.** Two contracts
+   with the same root require two independent token deposits; maintaining a
+   deployment log (contract address → Merkle root hash → amount deposited) is
+   the operational control that prevents accidental double-funding.
+
+4. **Document the root in the deployment record.** The `docs/deploying.md`
+   guide records the contract address and root together. A mismatch between the
+   intended contract and the root in `merkle-tree.json` must surface at the
+   verification step before recipients are notified.
+
+### Test coverage
+
+No on-chain test covers this scenario because it is an operational failure mode,
+not a contract bug. The contract is correct — it is the deployment procedure
+that must be controlled. Verifying the operational control is the responsibility
+of the deployment checklist in `docs/deploying.md`.
+
+### Cross-network note
+
+Because Stellar mainnet and testnet share the same WASM and address formats, a
+tree generated for testnet can technically be submitted against a mainnet
+contract with the same root. Recipients should never be sent testnet proofs as
+a substitute for mainnet proofs. The deployment record MUST include the network
+(`testnet` / `mainnet`) alongside the contract address and root.
+
+---
+
 ## Open questions before mainnet
 
 1. Confirm on testnet that a restored `Claimed` entry still reads `true`

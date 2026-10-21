@@ -19,6 +19,8 @@ pub enum DataKey {
     Active,
     /// Unix timestamp (seconds) after which `reclaim()` is permitted.
     Expiration,
+    /// Count of successful claims.
+    ClaimedCount,
 }
 
 /// Errors returned by the airdrop contract.
@@ -39,6 +41,31 @@ pub enum AirdropError {
     ZeroAmount = 6,
     /// `reclaim()` called before the expiration timestamp has been reached.
     NotYetExpired = 7,
+    /// `initialize()` called with an expiration timestamp that is already in
+    /// the past (i.e. `expiration <= env.ledger().timestamp()`).
+    ExpirationInPast = 8,
+}
+
+/// A snapshot of all contract instance state, returned by `contract_info()`.
+///
+/// This struct lets callers fetch everything in a single RPC simulation call
+/// rather than making 5–6 separate calls. Fields mirror the instance storage
+/// keys one-for-one.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractInfo {
+    /// Admin address — can pause and reclaim.
+    pub admin: Address,
+    /// SEP-41 token contract being distributed.
+    pub token: Address,
+    /// 32-byte Merkle root committed at `initialize`.
+    pub merkle_root: soroban_sdk::BytesN<32>,
+    /// Total tokens deposited at `initialize`.
+    pub total_deposited: i128,
+    /// Whether the airdrop is currently accepting claims.
+    pub active: bool,
+    /// Unix timestamp (seconds) after which `reclaim()` is permitted.
+    pub expiration: u64,
 }
 
 /// A single recipient's allocation inside a batch claim.

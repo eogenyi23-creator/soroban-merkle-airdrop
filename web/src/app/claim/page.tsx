@@ -49,6 +49,42 @@ const DEFAULT_TREE_URL = process.env.NEXT_PUBLIC_MERKLE_TREE_URL ?? "";
 /** 48 hours in seconds */
 const WARN_THRESHOLD_SECS = 48 * 60 * 60;
 
+/** localStorage key prefix for claim history, keyed by address. */
+const CLAIM_HISTORY_PREFIX = "airdrop:claim-history:";
+
+/** A single past claim record. */
+export type ClaimRecord = {
+  txHash: string;
+  timestamp: number;
+  amount?: string;
+};
+
+/** Read claim history for an address from localStorage. */
+function readClaimHistory(address: string): ClaimRecord[] {
+  if (typeof window === "undefined" || !address) return [];
+  try {
+    const raw = window.localStorage.getItem(CLAIM_HISTORY_PREFIX + address);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as ClaimRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Persist claim history for an address to localStorage. */
+function writeClaimHistory(address: string, records: ClaimRecord[]) {
+  if (typeof window === "undefined" || !address) return;
+  try {
+    window.localStorage.setItem(
+      CLAIM_HISTORY_PREFIX + address,
+      JSON.stringify(records)
+    );
+  } catch {
+    // Non-fatal: storage may be unavailable (private mode, quota, etc.)
+  }
+}
+
 export type Status =
   | "idle"
   | "checking"
@@ -81,6 +117,18 @@ const spinnerStyles = `
   }
 `;
 
+// Map status → CSS variable name for border/text colour
+const statusVar: Record<Status, string> = {
+  idle:         "var(--text-muted)",
+  checking:     "var(--text-muted)",
+  eligible:     "var(--success)",
+  not_eligible: "var(--accent)",
+  claimed:      "var(--accent)",
+  claiming:     "var(--text-muted)",
+  success:      "var(--success)",
+  error:        "var(--error)",
+};
+
 export default function ClaimPage() {
   const { network, contractId } = useNetwork();
 
@@ -105,14 +153,8 @@ export default function ClaimPage() {
   const [message, setMessage] = useState("");
   const [txHash, setTxHash] = useState("");
 
-  // ── #84: SEP-7 state ────────────────────────────────────────────────────────
-  /** SEP-7 stellar:tx?xdr=... URI, populated after eligibility check passes. */
-  const [sep7Uri, setSep7Uri] = useState<string | null>(null);
-  const [sep7Loading, setSep7Loading] = useState(false);
-  const [sep7Error, setSep7Error] = useState("");
-  const [copied, setCopied] = useState(false);
-  /** Canvas ref for the QR code */
-  const qrCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  // ── Claim history (persisted in localStorage, keyed by address) ──────────
+  const [claimHistory, setClaimHistory] = useState<ClaimRecord[]>([]);
 
   // ── #77: Expiration state ────────────────────────────────────────────────
   /** Unix timestamp (seconds) when the airdrop expires, or null if unknown. */
@@ -162,19 +204,14 @@ export default function ClaimPage() {
     };
   }, [contractId, network]);
 
-  // ── #84: Render QR code whenever sep7Uri changes ────────────────────────
+  // ── Load claim history whenever the connected address changes ────────────
   useEffect(() => {
-    if (!sep7Uri || !qrCanvasRef.current) return;
-
-    QRCode.toCanvas(qrCanvasRef.current, sep7Uri, {
-      width: 220,
-      margin: 2,
-      color: { dark: "#ededed", light: "#111111" },
-    }).catch(() => {
-      // If the URI is too long for a QR code, silently skip rendering.
-      // The copy-link and tap-to-open paths still work.
-    });
-  }, [sep7Uri]);
+    if (!walletAddress) {
+      setClaimHistory([]);
+      return;
+    }
+    setClaimHistory(readClaimHistory(walletAddress));
+  }, [walletAddress]);
 
   // ── #78: Derived loading flag ──────────────────────────────────────────
   const isLoading = status === "checking" || status === "claiming";
@@ -389,7 +426,7 @@ export default function ClaimPage() {
       };
 
       // Verify proof locally before submitting
-      if (!verifyProof(treeData.root as string, proof.address, proof.amount, proof.proof)) {
+      if (!verifyProof(treeData.root as string, contractId, proof.address, proof.amount, proof.proof)) {
         throw new Error("Proof verification failed — file may be corrupted or from a different airdrop");
       }
 
@@ -405,10 +442,29 @@ export default function ClaimPage() {
       setTxHash(result.txHash);
       setStatus("success");
       setMessage(`Successfully claimed ${result.amount.toString()} tokens!`);
+
+      // Persist this successful claim to localStorage keyed by address
+      const record: ClaimRecord = {
+        txHash: result.txHash,
+        timestamp: Date.now(),
+        amount: result.amount.toString(),
+      };
+      const existing = readClaimHistory(walletAddress.trim());
+      const updated = [record, ...existing];
+      writeClaimHistory(walletAddress.trim(), updated);
+      setClaimHistory(updated);
     } catch (err) {
       setStatus("error");
       setMessage((err as Error).message);
     }
+  }
+
+  // ─── Clear claim history for the connected address ──────────────────────────
+
+  function handleClearHistory() {
+    if (!walletAddress) return;
+    writeClaimHistory(walletAddress.trim(), []);
+    setClaimHistory([]);
   }
 
   const statusBorderColor: Record<Status, string> = {
@@ -441,9 +497,66 @@ export default function ClaimPage() {
       <style>{spinnerStyles}</style>
 
       <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>Check &amp; Claim</h1>
-      <p style={{ color: "#888", marginBottom: 32 }}>
+      <p style={{ color: "#888", marginBottom: totalDeposited !== null ? 16 : 32 }}>
         Connect your Freighter wallet to check eligibility and claim your tokens.
       </p>
+
+      {/* ── #128: Progress bar ── */}
+      {totalDeposited !== null && totalClaimed !== null && (
+        <div
+          aria-label="Airdrop progress"
+          style={{
+            border: "1px solid #222",
+            borderRadius: 10,
+            padding: "16px 20px",
+            background: "#111",
+            marginBottom: 24,
+          }}
+        >
+          {(() => {
+            const pct =
+              totalDeposited > 0n
+                ? Number((totalClaimed * 10000n) / totalDeposited) / 100
+                : 0;
+            return (
+              <>
+                <div
+                  role="progressbar"
+                  aria-valuenow={pct}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label={`${pct.toFixed(1)}% of tokens claimed`}
+                  style={{
+                    background: "#1a1a1a",
+                    borderRadius: 6,
+                    height: 14,
+                    overflow: "hidden",
+                    marginBottom: 8,
+                    border: "1px solid #333",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${Math.min(100, pct)}%`,
+                      height: "100%",
+                      background: pct >= 100 ? "#4caf50" : "#8ae4ff",
+                      borderRadius: 6,
+                      transition: "width 0.4s ease",
+                      minWidth: pct > 0 ? 3 : 0,
+                    }}
+                  />
+                </div>
+                <p style={{ margin: 0, fontSize: 12, color: "#aaa" }}>
+                  <strong style={{ color: "#ededed" }}>{totalClaimed.toLocaleString()}</strong>
+                  {" "}tokens claimed out of{" "}
+                  <strong style={{ color: "#ededed" }}>{totalDeposited.toLocaleString()}</strong>
+                  {" "}total ({pct.toFixed(1)}%)
+                </p>
+              </>
+            );
+          })()}
+        </div>
+      )}
 
       {/* ── #77: Expired banner ── */}
       {isExpired && (
@@ -886,11 +999,100 @@ export default function ClaimPage() {
               href={`https://stellar.expert/explorer/${network}/tx/${txHash}`}
               target="_blank"
               rel="noopener noreferrer"
-              style={{ color: "#8ae4ff", fontSize: 13 }}
+              style={{ color: "var(--accent)", fontSize: 13 }}
             >
               View transaction on Stellar Expert →
             </a>
           </div>
+        )}
+
+        {/* ── Claim History ── */}
+        {walletConnected && (
+          <section
+            aria-labelledby="claim-history-heading"
+            style={{ marginTop: 24 }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 10,
+              }}
+            >
+              <h2
+                id="claim-history-heading"
+                style={{ fontSize: 16, fontWeight: 600, margin: 0 }}
+              >
+                Claim History
+              </h2>
+              {claimHistory.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearHistory}
+                  className="tab-btn"
+                  style={{ fontSize: 12 }}
+                >
+                  Clear History
+                </button>
+              )}
+            </div>
+
+            {claimHistory.length === 0 ? (
+              <p style={{ fontSize: 13, color: "#888", margin: 0 }}>
+                No past claims for this address.
+              </p>
+            ) : (
+              <ul
+                style={{
+                  listStyle: "none",
+                  padding: 0,
+                  margin: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                }}
+              >
+                {claimHistory.map((rec) => (
+                  <li
+                    key={rec.txHash}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      background: "#111",
+                      border: "1px solid #333",
+                      fontSize: 13,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 4,
+                    }}
+                  >
+                    <span style={{ color: "#aaa" }}>
+                      {new Date(rec.timestamp).toLocaleString()}
+                      {rec.amount ? ` — ${rec.amount} tokens` : ""}
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: "monospace",
+                        wordBreak: "break-all",
+                        color: "#ededed",
+                      }}
+                    >
+                      {rec.txHash}
+                    </span>
+                    <a
+                      href={`https://stellar.expert/explorer/${network}/tx/${rec.txHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: "var(--accent)", fontSize: 12 }}
+                    >
+                      View on Stellar Expert →
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
         )}
       </div>
     </div>

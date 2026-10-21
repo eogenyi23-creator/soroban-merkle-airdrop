@@ -66,7 +66,7 @@ async function main(): Promise<void> {
   // ── Step 1: Build the Merkle tree ─────────────────────────────────────────
   console.log("Step 1: Building Merkle tree from 3 entries…");
 
-  const { root, proofs } = buildMerkleTree(ENTRIES);
+  const { root, proofs } = buildMerkleTree(CONTRACT_ID, ENTRIES);
 
   console.log(`  Merkle root : ${root}`);
   console.log(`  Entries     : ${proofs.size}`);
@@ -87,7 +87,7 @@ async function main(): Promise<void> {
   let allValid = true;
   for (const entry of ENTRIES) {
     const p = proofs.get(entry.address)!;
-    const valid = verifyProof(root, p.address, p.amount, p.proof);
+    const valid = verifyProof(root, CONTRACT_ID, p.address, p.amount, p.proof);
     console.log(`  ${entry.address.slice(0, 16)}…  →  ${valid ? "✓ valid" : "✗ INVALID"}`);
     if (!valid) allValid = false;
   }
@@ -99,7 +99,7 @@ async function main(): Promise<void> {
   console.log("  All proofs verified ✓\n");
 
   // Also confirm a tampered proof is correctly rejected
-  const tampered = verifyProof(root, ENTRIES[0].address, 9_999n, proofs.get(ENTRIES[0].address)!.proof);
+  const tampered = verifyProof(root, CONTRACT_ID, ENTRIES[0].address, 9_999n, proofs.get(ENTRIES[0].address)!.proof);
   console.log(`  Tampered-amount proof correctly rejected: ${!tampered ? "✓" : "❌ UNEXPECTED PASS"}\n`);
 
   // ── Step 3: Submit (or print) a claim transaction ─────────────────────────

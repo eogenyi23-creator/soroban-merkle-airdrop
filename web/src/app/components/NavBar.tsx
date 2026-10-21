@@ -1,9 +1,27 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useNetwork, type Network } from "../context/NetworkContext";
+
+type Theme = "dark" | "light";
 
 export default function NavBar() {
   const { network, setNetwork } = useNetwork();
+
+  // Initialise from whatever the FOUC-prevention script already set on <html>.
+  const [theme, setTheme] = useState<Theme>("dark");
+
+  useEffect(() => {
+    const attr = document.documentElement.getAttribute("data-theme");
+    if (attr === "dark" || attr === "light") setTheme(attr);
+  }, []);
+
+  function toggleTheme() {
+    const next: Theme = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("theme", next); } catch { /* private browsing */ }
+  }
 
   function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
     setNetwork(e.target.value as Network);
@@ -44,6 +62,16 @@ export default function NavBar() {
         >
           {network}
         </span>
+
+        {/* ── Theme toggle (#113) ── */}
+        <button
+          onClick={toggleTheme}
+          className="theme-toggle"
+          aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          data-testid="theme-toggle"
+        >
+          {theme === "dark" ? "☀️" : "🌙"}
+        </button>
       </div>
     </nav>
   );

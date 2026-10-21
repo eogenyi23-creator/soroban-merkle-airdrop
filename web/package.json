@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
@@ -15,25 +16,23 @@
     "@soroban-merkle-airdrop/sdk": "workspace:*",
     "@stellar/freighter-api": "1.7.1",
     "@stellar/stellar-sdk": "13.1.0",
-    "next": "14.2.5",
-    "qrcode": "1.5.4",
+    "next": "16.4.0",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "19.3.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "6.4.6",
     "@testing-library/react": "16.0.0",
     "@testing-library/user-event": "14.5.2",
-    "@types/node": "20.14.0",
-    "@types/qrcode": "1.5.5",
+    "@types/node": "26.6.5",
     "@types/react": "18.3.3",
-    "@types/react-dom": "18.3.0",
+    "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "4.3.1",
     "eslint": "8.57.0",
-    "eslint-config-next": "14.2.5",
+    "eslint-config-next": "16.4.2",
     "jest-axe": "9.0.0",
     "jsdom": "24.1.1",
     "typescript": "5.4.5",
-    "vitest": "2.0.5"
+    "vitest": "5.0.5"
   }
 }

@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "soroban-merkle-airdrop",
+  "version": "0.1.0",
+  "description": "Gas-efficient Merkle tree airdrop for Stellar. Stores only a 32-byte Merkle root on-chain; recipients prove inclusion via compact Merkle proofs.",
+  "functions": [
+    {
+      "name": "initialize",
+      "description": "Initialise the airdrop. Must be called once before any claims. The caller deposits total_amount tokens from the SEP-41 token contract into this contract. Emits an 'init' event.",
+      "inputs": [
+        {
+          "name": "admin",
+          "type": "Address",
+          "description": "Address that controls the airdrop (can pause and reclaim)."
+        },
+        {
+          "name": "token",
+          "type": "Address",
+          "description": "SEP-41 token contract address to distribute."
+        },
+        {
+          "name": "merkle_root",
+          "type": "BytesN<32>",
+          "description": "32-byte Merkle root of the (address, amount) distribution tree."
+        },
+        {
+          "name": "total_amount",
+          "type": "i128",
+          "description": "Total tokens to distribute; transferred from admin into the contract."
+        },
+        {
+          "name": "expiration",
+          "type": "u64",
+          "description": "Unix timestamp (seconds) after which reclaim() is permitted."
+        }
+      ],
+      "output": {
+        "type": "Result<(), AirdropError>",
+        "description": "Ok(()) on success, or an AirdropError on failure."
+      },
+      "events": [
+        {
+          "topic": ["Symbol(\"init\")", "Address(admin)"],
+          "data": "(BytesN<32>(merkle_root), i128(total_amount))"
+        }
+      ]
+    },
+    {
+      "name": "claim",
+      "description": "Claim tokens from the airdrop. The claimant provides their allocation amount and a Merkle proof demonstrating they are in the distribution tree. Tokens are transferred immediately on success. Emits a 'claimed' event.",
+      "inputs": [
+        {
+          "name": "claimant",
+          "type": "Address",
+          "description": "Address claiming tokens; must sign the transaction (require_auth)."
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "description": "Token amount allocated to this claimant."
+        },
+        {
+          "name": "proof",
+          "type": "Vec<BytesN<32>>",
+          "description": "Ordered list of sibling hashes from leaf to root."
+        }
+      ],
+      "output": {
+        "type": "Result<(), AirdropError>",
+        "description": "Ok(()) on success, or an AirdropError on failure."
+      },
+      "events": [
+        {
+          "topic": ["Symbol(\"claimed\")", "Address(claimant)"],
+          "data": "i128(amount)"
+        }
+      ]
+    },
+    {
+      "name": "set_active",
+      "description": "Pause or unpause the airdrop. Only the admin can call this.",
+      "inputs": [
+        {
+          "name": "active",
+          "type": "bool",
+          "description": "true to activate, false to pause the airdrop."
+        }
+      ],
+      "output": {
+        "type": "Result<(), AirdropError>",
+        "description": "Ok(()) on success, or an AirdropError on failure."
+      },
+      "events": []
+    },
+    {
+      "name": "reclaim",
+      "description": "Reclaim unclaimed tokens after the airdrop expires. Admin only. Can only be called once env.ledger().timestamp() >= expiration. Transfers the contract's remaining token balance back to the admin. Emits a 'reclaimed' event.",
+      "inputs": [],
+      "output": {
+        "type": "Result<i128, AirdropError>",
+        "description": "The amount reclaimed (i128) on success, or an AirdropError on failure."
+      },
+      "events": [
+        {
+          "topic": ["Symbol(\"reclaimed\")", "Address(admin)"],
+          "data": "i128(balance)"
+        }
+      ]
+    },
+    {
+      "name": "merkle_root",
+      "description": "Return the Merkle root stored in this contract. Returns None if not yet initialised.",
+      "inputs": [],
+      "output": {
+        "type": "Option<BytesN<32>>",
+        "description": "The 32-byte Merkle root, or None."
+      },
+      "events": []
+    },
+    {
+      "name": "is_claimed",
+      "description": "Return true if the given claimant address has already claimed.",
+      "inputs": [
+        {
+          "name": "claimant",
+          "type": "Address",
+          "description": "Address to check."
+        }
+      ],
+      "output": {
+        "type": "bool",
+        "description": "true if the address has claimed, false otherwise."
+      },
+      "events": []
+    },
+    {
+      "name": "is_active",
+      "description": "Return whether the airdrop is currently active.",
+      "inputs": [],
+      "output": {
+        "type": "bool",
+        "description": "true if the airdrop is active, false if paused or uninitialised."
+      },
+      "events": []
+    },
+    {
+      "name": "token",
+      "description": "Return the SEP-41 token contract address being distributed.",
+      "inputs": [],
+      "output": {
+        "type": "Option<Address>",
+        "description": "Token contract address, or None if not yet initialised."
+      },
+      "events": []
+    },
+    {
+      "name": "admin",
+      "description": "Return the admin address.",
+      "inputs": [],
+      "output": {
+        "type": "Option<Address>",
+        "description": "Admin address, or None if not yet initialised."
+      },
+      "events": []
+    },
+    {
+      "name": "total_deposited",
+      "description": "Return total tokens deposited at initialisation.",
+      "inputs": [],
+      "output": {
+        "type": "i128",
+        "description": "Total tokens deposited (0 if not yet initialised)."
+      },
+      "events": []
+    },
+    {
+      "name": "expiration",
+      "description": "Return the expiration timestamp (unix seconds) after which reclaim is allowed.",
+      "inputs": [],
+      "output": {
+        "type": "Option<u64>",
+        "description": "Expiration unix timestamp, or None if not yet initialised."
+      },
+      "events": []
+    }
+  ],
+  "errors": [
+    {
+      "name": "AlreadyInitialized",
+      "value": 1,
+      "description": "Contract has already been initialised. initialize() may only be called once."
+    },
+    {
+      "name": "AlreadyClaimed",
+      "value": 2,
+      "description": "Caller has already claimed their allocation. Each address may only claim once."
+    },
+    {
+      "name": "InvalidProof",
+      "value": 3,
+      "description": "The Merkle proof supplied does not verify against the stored root. Check the proof and amount are correct."
+    },
+    {
+      "name": "NotActive",
+      "value": 4,
+      "description": "Contract is not currently active. The admin has paused the airdrop."
+    },
+    {
+      "name": "NotInitialized",
+      "value": 5,
+      "description": "Contract has not been initialised yet. Call initialize() first."
+    },
+    {
+      "name": "ZeroAmount",
+      "value": 6,
+      "description": "Zero or negative amount is not valid for initialize() or claim()."
+    },
+    {
+      "name": "NotYetExpired",
+      "value": 7,
+      "description": "reclaim() called before the expiration timestamp has been reached."
+    }
+  ],
+  "storage": {
+    "instance": [
+      { "key": "MerkleRoot",      "type": "BytesN<32>", "description": "32-byte Merkle root of the distribution tree." },
+      { "key": "TokenAddress",    "type": "Address",    "description": "SEP-41 token contract address." },
+      { "key": "Admin",           "type": "Address",    "description": "Admin address." },
+      { "key": "TotalDeposited",  "type": "i128",       "description": "Total tokens deposited at initialisation." },
+      { "key": "Active",          "type": "bool",       "description": "Whether the airdrop is active." },
+      { "key": "Expiration",      "type": "u64",        "description": "Unix timestamp after which reclaim is permitted." }
+    ],
+    "persistent": [
+      { "key": "Claimed(Address)", "type": "bool", "description": "Whether a given claimant address has claimed. TTL ~2 years." }
+    ]
+  },
+  "leaf_hash_algorithm": {
+    "description": "SHA-256( SHA-256(address_utf8_strkey_bytes) ++ amount_big_endian[16] )",
+    "steps": [
+      "1. Encode the Stellar address as its strkey UTF-8 string bytes (e.g. 'GABC...' for G-accounts, 'CABC...' for contracts).",
+      "2. SHA-256 hash those bytes to produce a stable 32-byte address digest.",
+      "3. Encode the token amount as a 16-byte big-endian integer.",
+      "4. Concatenate (address_digest ++ amount_bytes) and SHA-256 hash to produce the 32-byte leaf."
+    ]
+  },
+  "node_hash_algorithm": {
+    "description": "SHA-256(min(left, right) ++ max(left, right)) — children are sorted so the tree is position-independent.",
+    "note": "Sorting by byte value means the same distribution produces the same root regardless of input list order."
+  }
+}

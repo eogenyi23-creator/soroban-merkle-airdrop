@@ -212,11 +212,37 @@ The repository ships a manual GitHub Actions workflow at `.github/workflows/depl
 
 Add your deployer secret key as a repository secret named `DEPLOYER_SECRET_KEY` (Settings → Secrets and variables → Actions).
 
+### Environments and the mainnet approval gate
+
+The workflow uses [GitHub Actions environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment) to enforce a human-approval step before any mainnet deployment.
+
+| Environment | Approval required | Purpose |
+|---|---|---|
+| `testnet` | No | Automated testnet deploys — runs immediately |
+| `mainnet` | **Yes** | Requires at least one reviewer to approve before the job starts |
+
+**One-time setup (do this before your first mainnet deploy):**
+
+1. In your repository go to **Settings → Environments**.
+2. Click **New environment** and name it exactly `mainnet`.
+3. Under **Deployment protection rules**, enable **Required reviewers** and add
+   one or more GitHub users or teams who are authorised to approve mainnet deploys.
+4. Optionally set a **Wait timer** (e.g. 5 minutes) to give reviewers time to notice
+   the pending deployment.
+5. Repeat steps 2–4 to create a `testnet` environment — leave it with **no** required
+   reviewers so testnet deploys continue to run automatically.
+
+> If the `mainnet` environment does not exist the deploy job will still run, but
+> without any approval gate. Always configure the environment before the first
+> mainnet use.
+
 ### Running the workflow
 
 1. Go to **Actions → Deploy Contract → Run workflow**.
 2. Select the target network, fill in all inputs, and click **Run workflow**.
-3. The workflow prints the final `Contract ID` and `WASM hash` in the job summary.
+3. **Mainnet only:** the job will pause at the environment gate. An authorised
+   reviewer must open the workflow run and click **Review deployments → Approve**.
+4. The workflow prints the final `Contract ID` and `WASM hash` in the job summary.
 
 ### What the workflow does
 

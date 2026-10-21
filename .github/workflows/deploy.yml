@@ -28,19 +28,39 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # ── Mainnet approval gate ─────────────────────────────────────────────────
+    # When deploying to mainnet the job is assigned to the "mainnet" GitHub
+    # Actions environment.  Configure that environment in your repository
+    # (Settings → Environments → mainnet) with one or more required reviewers.
+    # The job will pause here until an authorised reviewer clicks Approve.
+    # Testnet deployments use the "testnet" environment which has no reviewers
+    # configured, so they proceed immediately without manual approval.
+    environment: ${{ inputs.network }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
       - name: Build WASM
         run: cargo build --manifest-path contracts/airdrop/Cargo.toml --target wasm32v1-none --release
       - name: Install Stellar CLI
+        # Pinned to a specific release to prevent silent breakage from new CLI versions.
+        # To update: change STELLAR_CLI_VERSION to the desired tag from
+        # https://github.com/stellar/stellar-cli/releases, then test the deploy
+        # workflow manually on testnet before merging.
+        env:
+          STELLAR_CLI_VERSION: "v21.4.1"
         run: |
-          curl -L https://github.com/stellar/stellar-cli/releases/latest/download/stellar-cli-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          curl -L "https://github.com/stellar/stellar-cli/releases/download/${STELLAR_CLI_VERSION}/stellar-cli-x86_64-unknown-linux-gnu.tar.gz" | tar xz
           sudo mv stellar /usr/local/bin/
       - name: Configure identity
-        run: echo "${{ secrets.DEPLOYER_SECRET_KEY }}" | stellar keys add deployer --secret-key
+        # Pass the secret via an environment variable rather than piping it
+        # through echo, which would expose the value in shell history and
+        # process arguments.  The Stellar CLI reads STELLAR_SECRET_KEY when
+        # --secret-key is not provided on the command line.
+        env:
+          STELLAR_SECRET_KEY: ${{ secrets.DEPLOYER_SECRET_KEY }}
+        run: stellar keys add deployer --secret-key
       - name: Upload WASM
         id: upload
         run: |
@@ -64,7 +84,20 @@ jobs:
             --total_amount ${{ inputs.total_amount }} \
             --expiration ${{ inputs.expiration }}
       - name: Print result
+      - name: Print result
         run: |
+          {
+            echo "## Deployment Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Contract ID | \`${{ steps.deploy.outputs.contract_id }}\` |"
+            echo "| WASM hash | \`${{ steps.upload.outputs.wasm_hash }}\` |"
+            echo "| Network | ${{ inputs.network }} |"
+            echo "| Initialized at | $(date -u +%Y-%m-%dT%H:%M:%SZ) |"
+            echo "| Initialized at | $(date -u +%Y-%m-%dT%H:%M:%SZ) |"
+            echo "| Merkle root | \`${{ inputs.merkle_root }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
           echo "Contract ID: ${{ steps.deploy.outputs.contract_id }}"
           echo "WASM hash:   ${{ steps.upload.outputs.wasm_hash }}"
           echo "Network:     ${{ inputs.network }}"

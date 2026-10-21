@@ -77,10 +77,11 @@ Or browse the source directly:
 - [`sdk/src/client.ts`](sdk/src/client.ts) — `createAirdropClient` (RPC client)
 - [`sdk/src/types.ts`](sdk/src/types.ts) — all types, interfaces, and error classes
 
-## Example Script
+## Example Scripts
 
-A runnable end-to-end workflow is in [`examples/full-workflow.ts`](examples/full-workflow.ts).
-It builds a 3-entry Merkle tree, verifies all proofs, and submits (or prints) a claim transaction:
+### End-to-end claim workflow
+
+[`examples/full-workflow.ts`](examples/full-workflow.ts) builds a 3-entry Merkle tree, verifies all proofs, and submits (or prints) a claim transaction:
 
 ```bash
 # Dry-run — no keys required, prints the unsigned transaction XDR
@@ -89,6 +90,29 @@ DRY_RUN=1 npx ts-node examples/full-workflow.ts
 # Live claim against testnet
 CONTRACT_ID=C... SECRET_KEY=S... npx ts-node examples/full-workflow.ts
 ```
+
+### Contract event streaming
+
+[`examples/event-stream.ts`](examples/event-stream.ts) connects to the Soroban RPC server and polls for events emitted by the airdrop contract. It decodes `claimed`, `init`, `reclaimed`, and `paused` events and prints each one with a timestamp, address, and token amount — useful for building dashboards or notification systems.
+
+```bash
+# Stream events from testnet (polls every 5 s by default)
+CONTRACT_ID=C... npx ts-node examples/event-stream.ts
+
+# Stream from a specific ledger, on mainnet, with a custom poll interval
+CONTRACT_ID=C... NETWORK=mainnet START_LEDGER=12345678 POLL_INTERVAL=3000 \
+  npx ts-node examples/event-stream.ts
+```
+
+Available environment variables for the event streamer:
+
+| Variable | Default | Description |
+|---|---|---|
+| `CONTRACT_ID` | — | Deployed airdrop contract address (required) |
+| `NETWORK` | `testnet` | `testnet` or `mainnet` |
+| `START_LEDGER` | latest − 1 | Ledger sequence to start streaming from |
+| `POLL_INTERVAL` | `5000` | Polling interval in milliseconds |
+| `MAX_PAGES` | unlimited | Stop after this many poll iterations |
 
 ## SDK Installation
 
@@ -195,21 +219,25 @@ Global options:
 
 ## How the Merkle Proof Works
 
-**Leaf hash:** `SHA-256( SHA-256(address_as_utf8_strkey_bytes) ++ amount_big_endian[16] )`
+**Leaf hash:** `SHA-256( SHA-256(contract_strkey_utf8_bytes) ++ SHA-256(address_strkey_utf8_bytes) ++ amount_big_endian[16] )`
 
-The address is first hashed as the UTF-8 bytes of its Stellar strkey string
-(e.g. `GABC...` for accounts, `CABC...` for contracts) to produce a stable
-32-byte value. That hash is then concatenated with the 16-byte big-endian
-encoding of the amount and SHA-256'd again to produce the leaf. The double-hash
-is necessary because Soroban's `Address` type does not expose the raw public-key
-bytes directly in contract code — hashing the strkey string is the stable,
-canonical substitute used by both the Rust contract and the TypeScript SDK.
+The contract address is SHA-256 hashed from its Stellar strkey string (`C...`) and
+prepended to the leaf pre-image as a **domain separator**. This prevents a valid
+proof from one contract deployment being replayed against a second deployment that
+uses the same Merkle root (see [docs/replay-attack-analysis.md](docs/replay-attack-analysis.md)).
+
+The claimant address is then SHA-256 hashed from its Stellar strkey string
+(e.g. `GABC...` for accounts, `CABC...` for contracts). Both hashes are concatenated
+with the 16-byte big-endian encoding of the amount and SHA-256'd again to produce
+the leaf. The double-hash is necessary because Soroban's `Address` type does not
+expose the raw public-key bytes directly in contract code.
 
 **Node hash:** `SHA-256(min(left, right) ++ max(left, right))` — sorted so the tree is position-independent.
 
 This means:
 - The same distribution produces the same root regardless of list order
 - Proofs are compact: O(log n) hashes for n recipients
+- A proof is cryptographically bound to the specific contract it was built for
 - The TypeScript builder and Rust verifier use identical algorithms
 
 ## Contributing
