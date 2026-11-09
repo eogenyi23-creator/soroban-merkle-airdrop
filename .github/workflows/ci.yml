@@ -31,9 +31,9 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Audit Rust dependencies
-        # Cargo test above generates Cargo.lock for this manifest (not tracked in git).
+        # Cargo test generates the workspace-root Cargo.lock (not tracked in git).
         # Use --file: cargo-audit does not accept cargo's --manifest-path flag.
-        run: cargo audit --file contracts/airdrop/Cargo.lock
+        run: cargo audit --file Cargo.lock
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin --version 0.31.2 --locked
       - name: Generate coverage report
