@@ -28,6 +28,12 @@ jobs:
         run: cargo clippy --manifest-path contracts/airdrop/Cargo.toml -- -D warnings
       - name: Run tests
         run: cargo test --manifest-path contracts/airdrop/Cargo.toml
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit Rust dependencies
+        # Cargo test above generates Cargo.lock for this manifest (not tracked in git).
+        # Use --file: cargo-audit does not accept cargo's --manifest-path flag.
+        run: cargo audit --file contracts/airdrop/Cargo.lock
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin --version 0.31.2 --locked
       - name: Generate coverage report
