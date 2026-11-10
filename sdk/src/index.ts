@@ -36,6 +36,9 @@ export type {
   ClaimedEvent,
   ReclaimedEvent,
   PausedEvent,
+  RootUpdEvent,
+  AdmXferEvent,
+  UpgradeEvent,
   AirdropEvent,
 } from "./types.js";
 export { NETWORKS, AirdropError, AirdropContractError, RpcError } from "./types.js";
