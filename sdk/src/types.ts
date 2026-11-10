@@ -410,9 +410,55 @@ export interface PausedEvent {
   active: boolean;
 }
 
+/**
+ * Emitted by `update_merkle_root()` when the admin replaces the Merkle root.
+ *
+ * Topic:  [Symbol("root_upd"), admin: Address]
+ * Data:   { newRoot: Buffer(32), newTotal: bigint }
+ */
+export interface RootUpdEvent {
+  /** The admin address that updated the Merkle root. */
+  admin: string;
+  /** The new 32-byte Merkle root as a hex string. */
+  newRoot: string;
+  /** The new total allocation across all recipients (in base units). */
+  newTotal: bigint;
+}
+
+/**
+ * Emitted by `transfer_admin()` whenever admin ownership moves to a new address.
+ *
+ * Note: the on-chain event symbol is `"adm_xfer"` (not `"transfer_admin"`).
+ *
+ * Topic:  [Symbol("adm_xfer"), oldAdmin: Address]
+ * Data:   newAdmin: Address
+ */
+export interface AdmXferEvent {
+  /** The outgoing admin address that authorized the transfer. */
+  oldAdmin: string;
+  /** The address that becomes the new admin. */
+  newAdmin: string;
+}
+
+/**
+ * Emitted by `upgrade()` when the admin replaces the contract WASM bytecode.
+ *
+ * Topic:  [Symbol("upgrade"), admin: Address]
+ * Data:   newWasmHash: BytesN<32>
+ */
+export interface UpgradeEvent {
+  /** The admin address that performed the upgrade. */
+  admin: string;
+  /** The 32-byte hash of the replacement WASM as a hex string. */
+  newWasmHash: string;
+}
+
 /** Union of all events the airdrop contract can emit. */
 export type AirdropEvent =
   | { type: "init";      data: InitEvent     }
   | { type: "claimed";   data: ClaimedEvent  }
   | { type: "reclaimed"; data: ReclaimedEvent }
-  | { type: "paused";    data: PausedEvent   };
+  | { type: "paused";    data: PausedEvent   }
+  | { type: "root_upd";  data: RootUpdEvent  }
+  | { type: "adm_xfer";  data: AdmXferEvent  }
+  | { type: "upgrade";   data: UpgradeEvent  };
