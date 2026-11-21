@@ -56,10 +56,11 @@ export async function runStatusAction(
       contractId,
     });
 
-    const [active, root, total, exp] = await Promise.all([
+    const [active, root, total, totalClaimed, exp] = await Promise.all([
       client.isActive(),
       client.merkleRoot(),
       client.totalDeposited(),
+      client.totalClaimed(),
       client.expiration(),
     ]);
 
@@ -101,6 +102,7 @@ export async function runStatusAction(
         active,
         root: root ?? null,
         deposited: total.toString(),
+        totalClaimed: totalClaimed.toString(),
         remaining: remaining.toString(),
         expiration: exp !== null ? exp.toString() : null,
         decimals: decimals ?? null,
@@ -144,13 +146,14 @@ export async function runStatusAction(
     }
 
     (spinner as ReturnType<typeof ora>).succeed("Contract status:");
-    console.log(`\n  ${chalk.bold("Contract:")}    ${chalk.cyan(contractId)}`);
-    console.log(`  ${chalk.bold("Network:")}     ${network}`);
-    console.log(`  ${chalk.bold("Active:")}      ${active ? chalk.green("yes") : chalk.red("no")}`);
-    console.log(`  ${chalk.bold("Root:")}        ${chalk.cyan(root ?? "not initialized")}`);
-    console.log(`  ${chalk.bold("Deposited:")}   ${displayAmount(total)}`);
-    console.log(`  ${chalk.bold("Remaining:")}   ${displayAmount(remaining)}`);
-    console.log(`  ${chalk.bold("Expiration:")}  ${expirationLine}`);
+    console.log(`\n  ${chalk.bold("Contract:")}      ${chalk.cyan(contractId)}`);
+    console.log(`  ${chalk.bold("Network:")}       ${network}`);
+    console.log(`  ${chalk.bold("Active:")}        ${active ? chalk.green("yes") : chalk.red("no")}`);
+    console.log(`  ${chalk.bold("Root:")}          ${chalk.cyan(root ?? "not initialized")}`);
+    console.log(`  ${chalk.bold("Deposited:")}     ${displayAmount(total)}`);
+    console.log(`  ${chalk.bold("Total claimed:")} ${displayAmount(totalClaimed)}`);
+    console.log(`  ${chalk.bold("Remaining:")}     ${displayAmount(remaining)}`);
+    console.log(`  ${chalk.bold("Expiration:")}    ${expirationLine}`);
 
     if (opts.address) {
       let statusLabel: string;

@@ -24,6 +24,7 @@ const mockClient = {
   isActive: vi.fn(),
   merkleRoot: vi.fn(),
   totalDeposited: vi.fn(),
+  totalClaimed: vi.fn(),
   expiration: vi.fn(),
   isClaimed: vi.fn(),
   remainingBalance: vi.fn(),
@@ -135,6 +136,7 @@ describe("status command — runStatusAction", () => {
     mockClient.isActive.mockResolvedValue(true);
     mockClient.merkleRoot.mockResolvedValue(MERKLE_ROOT);
     mockClient.totalDeposited.mockResolvedValue(15000n);
+    mockClient.totalClaimed.mockResolvedValue(5000n);
     mockClient.expiration.mockResolvedValue(9999999999n); // far future
     mockClient.isClaimed.mockResolvedValue(false);
     mockClient.remainingBalance.mockResolvedValue(10000n);
@@ -290,6 +292,7 @@ describe("status command — Issue #68: --rpc-url forwarding", () => {
     mockClient.isActive.mockResolvedValue(true);
     mockClient.merkleRoot.mockResolvedValue(MERKLE_ROOT);
     mockClient.totalDeposited.mockResolvedValue(0n);
+    mockClient.totalClaimed.mockResolvedValue(0n);
     mockClient.expiration.mockResolvedValue(null);
     mockClient.remainingBalance.mockResolvedValue(0n);
     mockClient.tokenDecimals.mockResolvedValue(null);
@@ -348,6 +351,7 @@ describe("status command — Issue #67: --json output flag", () => {
     mockClient.isActive.mockResolvedValue(true);
     mockClient.merkleRoot.mockResolvedValue(MERKLE_ROOT);
     mockClient.totalDeposited.mockResolvedValue(15000n);
+    mockClient.totalClaimed.mockResolvedValue(5000n);
     mockClient.expiration.mockResolvedValue(9999999999n);
     mockClient.isClaimed.mockResolvedValue(false);
     mockClient.remainingBalance.mockResolvedValue(10000n);
@@ -384,6 +388,7 @@ describe("status command — Issue #67: --json output flag", () => {
     expect(parsed).toHaveProperty("active");
     expect(parsed).toHaveProperty("root");
     expect(parsed).toHaveProperty("deposited");
+    expect(parsed).toHaveProperty("totalClaimed");
     expect(parsed).toHaveProperty("remaining");
     expect(parsed).toHaveProperty("expiration");
     expect(parsed).toHaveProperty("decimals");
@@ -468,6 +473,7 @@ describe("status command — Issue #57: remaining balance", () => {
     mockClient.isActive.mockResolvedValue(true);
     mockClient.merkleRoot.mockResolvedValue(MERKLE_ROOT);
     mockClient.totalDeposited.mockResolvedValue(15000n);
+    mockClient.totalClaimed.mockResolvedValue(5000n);
     mockClient.expiration.mockResolvedValue(9999999999n);
     mockClient.isClaimed.mockResolvedValue(false);
     mockClient.remainingBalance.mockResolvedValue(9000n);
@@ -509,6 +515,7 @@ describe("status command — Issue #58: token decimals formatting", () => {
     mockClient.isActive.mockResolvedValue(true);
     mockClient.merkleRoot.mockResolvedValue(MERKLE_ROOT);
     mockClient.totalDeposited.mockResolvedValue(1_000_000_0n);
+    mockClient.totalClaimed.mockResolvedValue(5_000_000_0n);
     mockClient.expiration.mockResolvedValue(9999999999n);
     mockClient.isClaimed.mockResolvedValue(false);
     mockClient.remainingBalance.mockResolvedValue(5_000_000_0n);
@@ -553,5 +560,61 @@ describe("status command — Issue #58: token decimals formatting", () => {
     const { lines, processExited } = await run({}, { contractId: CONTRACT_ID });
     expect(processExited).toBe(false);
     expect(lines.join("\n")).toContain(CONTRACT_ID);
+  });
+
+  it("shows formatted Total claimed when decimals are available", async () => {
+    const { lines } = await run({}, { contractId: CONTRACT_ID });
+    const line = lines.find((l) => l.includes("Total claimed:"));
+    expect(line).toBeDefined();
+    // 50_000_000 raw with 7 decimals = 5.0000000
+    expect(line).toContain("5.0000000");
+    expect(line).toContain("50000000 raw");
+  });
+});
+
+// ─── Issue #510: total claimed display ────────────────────────────────────────
+
+describe("status command — Issue #510: total claimed", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockClient.isActive.mockResolvedValue(true);
+    mockClient.merkleRoot.mockResolvedValue(MERKLE_ROOT);
+    mockClient.totalDeposited.mockResolvedValue(15000n);
+    mockClient.totalClaimed.mockResolvedValue(6000n);
+    mockClient.expiration.mockResolvedValue(9999999999n);
+    mockClient.isClaimed.mockResolvedValue(false);
+    mockClient.remainingBalance.mockResolvedValue(9000n);
+    mockClient.tokenDecimals.mockResolvedValue(null);
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  afterEach(() => {
+    delete process.env["AIRDROP_CONTRACT_ID"];
+  });
+
+  it("calls client.totalClaimed()", async () => {
+    await run({}, { contractId: CONTRACT_ID });
+    expect(mockClient.totalClaimed).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a Total claimed line in human-readable output", async () => {
+    const { lines } = await run({}, { contractId: CONTRACT_ID });
+    const line = lines.find((l) => l.includes("Total claimed:"));
+    expect(line).toBeDefined();
+    expect(line).toContain("6000");
+  });
+
+  it("JSON output includes totalClaimed as a bigint string", async () => {
+    const { lines } = await run({ json: true }, { contractId: CONTRACT_ID });
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.totalClaimed).toBe("6000");
+  });
+
+  it("JSON totalClaimed preserves values larger than Number.MAX_SAFE_INTEGER", async () => {
+    const big = 2n ** 100n;
+    mockClient.totalClaimed.mockResolvedValue(big);
+    const { lines } = await run({ json: true }, { contractId: CONTRACT_ID });
+    const parsed = JSON.parse(lines.find((l) => l.trimStart().startsWith("{"))!);
+    expect(parsed.totalClaimed).toBe(big.toString());
   });
 });
