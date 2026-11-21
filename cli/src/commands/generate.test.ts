@@ -18,6 +18,7 @@ import { writeFile } from "fs/promises";
 /** Well-known valid Stellar G-addresses (public-key strkeys, 56 chars). */
 const ADDR_A = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
 const ADDR_B = "GAYOLLLUIZE4DZMBB2ZBKGBUBZLIOYU6XFLW37GBP2VZD3ABNXCW4BVA";
+const CONTRACT_ID = "CA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUWDA";
 
 /** Build a minimal two-entry CSV string. */
 function twoEntryCsv(): string {
@@ -46,11 +47,11 @@ function largeEntryCsv(n: number): string {
  */
 async function runGenerate(
   inputPath: string,
-  outputPath: string
+  outputPath: string,
+  contractId: string = CONTRACT_ID
 ): Promise<{ exitCode: number | undefined }> {
-  // Re-import a fresh copy of the command each time to avoid Commander
-  // state leaking between tests (Commander tracks whether parse() was called).
-  const { generateCommand } = await import("./generate.js");
+  const { makeGenerateCommand } = await import("./generate.js");
+  const generateCommand = makeGenerateCommand();
 
   let capturedCode: number | undefined;
   const exitSpy = vi
@@ -70,7 +71,7 @@ async function runGenerate(
   try {
     // Commander's parseAsync expects process.argv format: [node, script, ...args]
     await generateCommand.parseAsync(
-      ["node", "merkle-airdrop", "--input", inputPath, "--output", outputPath],
+      ["node", "merkle-airdrop", "--input", inputPath, "--output", outputPath, "--contract-id", contractId],
       { from: "user" }
     );
   } catch (err) {
@@ -328,5 +329,62 @@ describe("generate command", () => {
     // Should be pretty-printed (contains newlines and spaces)
     expect(raw).toMatch(/\n/);
     expect(parsed.root).toBeTruthy();
+  });
+
+  // ── 13. Missing --contract-id flag → fails with helpful error ─────────────
+
+  it("fails with a helpful error when --contract-id is omitted", async () => {
+    await writeFile(inputFile, twoEntryCsv());
+    const { makeGenerateCommand } = await import("./generate.js");
+    const cmd = makeGenerateCommand();
+
+    let thrownError: Error | undefined;
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      cmd.exitOverride();
+      await cmd.parseAsync(
+        ["node", "merkle-airdrop", "--input", inputFile, "--output", outputFile],
+        { from: "user" }
+      );
+    } catch (err) {
+      thrownError = err as Error;
+    } finally {
+      vi.spyOn(process.stderr, "write").mockRestore();
+      vi.spyOn(process.stdout, "write").mockRestore();
+    }
+
+    expect(thrownError).toBeDefined();
+    expect(thrownError?.message).toMatch(/--contract-id/);
+  });
+
+  // ── 14. Valid C... contract ID is accepted ────────────────────────────────
+
+  it("accepts a valid C... contract ID", async () => {
+    await writeFile(inputFile, twoEntryCsv());
+
+    const { exitCode } = await runGenerate(inputFile, outputFile, CONTRACT_ID);
+
+    expect(exitCode).toBeUndefined();
+    const output = JSON.parse(await readFile(outputFile, "utf-8"));
+    expect(output.root).toHaveLength(64);
+  });
+
+  // ── 15. Contract ID is passed to buildMerkleTree as the first argument ────
+
+  it("passes the contract ID to buildMerkleTree as the first argument", async () => {
+    await writeFile(inputFile, twoEntryCsv());
+    const sdk = await import("@soroban-merkle-airdrop/sdk");
+    const spy = vi.spyOn(sdk, "buildMerkleTree");
+
+    try {
+      const { exitCode } = await runGenerate(inputFile, outputFile, CONTRACT_ID);
+      expect(exitCode).toBeUndefined();
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]?.[0]).toBe(CONTRACT_ID);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
