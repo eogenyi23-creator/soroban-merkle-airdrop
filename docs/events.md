@@ -216,6 +216,142 @@ After the admin successfully toggles the contract's active state. Not emitted if
 
 ---
 
+## `root_upd` (emitted by `update_merkle_root`)
+
+Emitted when the admin replaces the on-chain Merkle root with an updated distribution tree.
+
+> **Naming note:** The contract function is `update_merkle_root()`, but the on-chain event symbol is `"root_upd"`. When filtering events, use the symbol `"root_upd"` — not `"update_merkle_root"`.
+
+### Topic
+```
+[ Symbol("root_upd"), Address(admin) ]
+```
+
+| Position   | Type        | Description                                            |
+|------------|-------------|--------------------------------------------------------|
+| 0          | `Symbol`    | Literal `"root_upd"`                                   |
+| 1          | `Address`   | The admin account that called `update_merkle_root()`   |
+
+### Data
+```
+( BytesN<32>(new_root), i128(new_total) )
+```
+
+| Field         | Type           | Description                                                      |
+|---------------|----------------|------------------------------------------------------------------|
+| `new_root`    | `BytesN<32>`   | The new 32-byte Merkle root committed to by the contract         |
+| `new_total`   | `i128`         | The new total allocation across all recipients (in base units)   |
+
+### When emitted
+At the end of a successful `update_merkle_root()` call, after the new root and total are written to instance storage. Not emitted if the caller is not the admin or `new_total` is not positive (`ZeroAmount`). If `new_total` exceeds the previously deposited total, the admin funds the difference into the contract before the event is emitted.
+
+### Example
+```json
+{
+  "type": "contract",
+  "ledger": 14000,
+  "contractId": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+  "topic": [
+    { "type": "symbol", "value": "root_upd" },
+    { "type": "address", "value": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5" }
+  ],
+  "data": [
+    { "type": "bytes", "value": "b7e1c9d2...32bytes...hex" },
+    { "type": "i128", "value": "2000000000" }
+  ]
+}
+```
+
+---
+
+## `adm_xfer` (emitted by `transfer_admin`)
+
+Emitted whenever admin ownership is transferred to a new address, so off-chain indexers can track ownership history.
+
+> **Naming note:** The contract function is `transfer_admin()`, but the on-chain event symbol is `"adm_xfer"`. When filtering events, use the symbol `"adm_xfer"` — not `"transfer_admin"`.
+
+### Topic
+```
+[ Symbol("adm_xfer"), Address(old_admin) ]
+```
+
+| Position   | Type        | Description                                       |
+|------------|-------------|---------------------------------------------------|
+| 0          | `Symbol`    | Literal `"adm_xfer"`                              |
+| 1          | `Address`   | The outgoing admin that authorized the transfer   |
+
+### Data
+```
+Address(new_admin)
+```
+
+| Field         | Type        | Description                                  |
+|---------------|-------------|----------------------------------------------|
+| `new_admin`   | `Address`   | The address that becomes the new admin       |
+
+Note that topic\[1\] carries the *old* admin while data carries the *new* admin — both addresses are available from a single event, no state query required.
+
+### When emitted
+At the end of a successful `transfer_admin()` call, after the new admin is written to instance storage. Not emitted if the contract is not initialized or the current admin did not authorize the call.
+
+### Example
+```json
+{
+  "type": "contract",
+  "ledger": 15000,
+  "contractId": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+  "topic": [
+    { "type": "symbol", "value": "adm_xfer" },
+    { "type": "address", "value": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5" }
+  ],
+  "data": { "type": "address", "value": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN" }
+}
+```
+
+---
+
+## `upgrade`
+
+Emitted when the admin replaces the contract's WASM bytecode, so indexers and monitoring tools can detect upgrades.
+
+### Topic
+```
+[ Symbol("upgrade"), Address(admin) ]
+```
+
+| Position   | Type        | Description                                 |
+|------------|-------------|---------------------------------------------|
+| 0          | `Symbol`    | Literal `"upgrade"`                         |
+| 1          | `Address`   | The admin account that called `upgrade()`   |
+
+### Data
+```
+BytesN<32>(new_wasm_hash)
+```
+
+| Field             | Type           | Description                                                          |
+|-------------------|----------------|----------------------------------------------------------------------|
+| `new_wasm_hash`   | `BytesN<32>`   | Hash of the replacement WASM bytecode (already uploaded on-chain)    |
+
+### When emitted
+At the end of a successful `upgrade()` call, after `update_current_contract_wasm()` applies the new bytecode. Not emitted if the caller is not the admin or the upgrade fails.
+
+### Example
+```json
+{
+  "type": "contract",
+  "ledger": 16000,
+  "contractId": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+  "topic": [
+    { "type": "symbol", "value": "upgrade" },
+    { "type": "address", "value": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5" }
+  ],
+  "data": { "type": "bytes", "value": "c3f8a0b1...32bytes...hex" }
+}
+```
+
+---
+
 ## TypeScript event filtering
 
 The Stellar RPC `getEvents` endpoint lets you filter by contract ID and topic. The SDK exposes typed interfaces for all events (see `sdk/src/types.ts`).
@@ -332,3 +468,6 @@ const { events: claimEvents } = await rpc.getEvents({
 | `claimed`    | `claim`      | claimant  | `i128`                          |
 | `reclaimed`  | `reclaim`    | admin     | `(i128, u64)`                   |
 | `paused`     | `set_active` | admin     | `bool`                          |
+| `root_upd`   | `update_merkle_root` | admin     | `(BytesN<32>, i128)`            |
+| `adm_xfer`   | `transfer_admin` | old admin   | `Address`                       |
+| `upgrade`    | `upgrade`        | admin     | `BytesN<32>`                      |
