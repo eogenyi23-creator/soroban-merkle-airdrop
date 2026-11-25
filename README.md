@@ -259,6 +259,34 @@ This means:
 - A proof is cryptographically bound to the specific contract it was built for
 - The TypeScript builder and Rust verifier use identical algorithms
 
+### Who pays the gas: `claim` vs `claim_for`
+
+The contract exposes two claim entry points that use the same proof but differ in
+who signs and pays fees:
+
+| Function | Signer | Fee payer | Typical use case |
+|---|---|---|---|
+| `claim(claimant, amount, proof)` | the claimant | the claimant | normal case — the claimant has XLM and claims directly |
+| `claim_for(claimant, amount, proof)` | *(none required)* | **any third party** | operator / relayer / sponsor pays fees on the claimant's behalf |
+
+`claim_for` deliberately **omits `claimant.require_auth()`** — the Merkle proof is
+the sole authorisation. An operator cannot redirect tokens to themselves by
+substituting a different address, because the leaf hash binds the `(claimant,
+amount)` pair to the on-chain root; tokens are always sent to the `claimant`
+argument, never to the transaction submitter.
+
+Use `claim_for` when:
+
+- the claimant does not yet hold enough XLM to pay the Soroban fee,
+- an event organiser wants to sponsor fees for all participants,
+- a relayer batches claims on behalf of many users.
+
+Keep `claim` for the common case where the claimant wallet can pay its own fees.
+
+See [`contracts/airdrop/src/lib.rs`](contracts/airdrop/src/lib.rs) (`claim_for`)
+and the [FAQ entry on operator-pays](docs/faq.md#can-someone-else-pay-the-gas-for-my-claim)
+for the full rationale.
+
 ## Contributing
 
 See [docs/contributing.md](docs/contributing.md).
