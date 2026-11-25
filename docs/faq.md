@@ -131,6 +131,40 @@ transfer occurs — but the event is still emitted.
 
 ---
 
+### Can someone else pay the gas for my claim?
+
+Yes. The contract exposes a second entry point, `claim_for(claimant, amount, proof)`,
+designed for exactly this case.
+
+Unlike `claim`, `claim_for` **does not require the claimant to sign the transaction**.
+Any third party — an operator, relayer, or event organiser — can submit the call and
+pay the Soroban fee on the claimant's behalf. Tokens are still sent to `claimant`;
+the transaction submitter cannot redirect them.
+
+This is safe because the Merkle proof is the authorisation: only someone who knows
+the correct `(claimant, amount, proof)` triple can trigger a claim, and the leaf
+hash binds that triple to the on-chain root. An operator who tried to substitute a
+different recipient address would produce a leaf that is not in the tree, and the
+proof check would fail.
+
+**Typical uses**
+
+- Claimants whose wallet does not yet hold enough XLM to pay the Soroban fee.
+- Event organisers who want to sponsor gas for all participants in a drop.
+- Relayers batching many claims on behalf of users (one tx submitter, many recipients).
+
+**What the operator needs**
+
+The operator only needs the claimant's address, the amount, and the Merkle proof —
+no signature, no secret key. These three values are the same inputs the claimant
+would supply to `claim`, so the standard distribution file is sufficient.
+
+CLI support for `claim_for` is out of scope today; call it directly via the Soroban
+CLI, the TypeScript SDK, or a custom submitter. See `contracts/airdrop/src/lib.rs`
+(`claim_for`) for the full contract-side doc.
+
+---
+
 ### Is there a deadline to claim?
 
 The contract has **no claim deadline**. The `expiration` field only gates the
