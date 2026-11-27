@@ -819,6 +819,17 @@ fn claim_entry(
         .instance()
         .set(&DataKey::TotalClaimed, &(prev_claimed + amount));
 
+    // Count each successful claimant once; the duplicate-claim guard above
+    // ensures failed repeat attempts never reach this update.
+    let prev_count: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::ClaimedCount)
+        .unwrap_or(0);
+    env.storage()
+        .instance()
+        .set(&DataKey::ClaimedCount, &(prev_count + 1));
+
     env.events()
         .publish((symbol_short!("claimed"), claimant.clone()), amount);
 
