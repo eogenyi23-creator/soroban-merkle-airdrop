@@ -226,6 +226,41 @@ fn test_claim_success() {
 }
 
 #[test]
+fn test_claimed_count_tracks_unique_successful_claims() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant1 = Address::generate(&env);
+    let claimant2 = Address::generate(&env);
+
+    let (root, proof1, proof2) =
+        build_two_leaf_tree(&env, &contract_id, &claimant1, 1000, &claimant2, 500);
+
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    assert_eq!(client.claimed_count(), 0);
+
+    client.claim(&claimant1, &1000, &proof1);
+    assert_eq!(client.claimed_count(), 1);
+
+    client.claim(&claimant2, &500, &proof2);
+    assert_eq!(client.claimed_count(), 2);
+
+    // A repeated claim is rejected and must not increase the unique-claim count.
+    let result = client.try_claim(&claimant1, &1000, &proof1);
+    assert_eq!(result, Err(Ok(AirdropError::AlreadyClaimed)));
+    assert_eq!(client.claimed_count(), 2);
+}
+
+#[test]
 fn test_double_claim_fails() {
     let (env, admin, token, contract_id) = setup();
     let client = AirdropContractClient::new(&env, &contract_id);
